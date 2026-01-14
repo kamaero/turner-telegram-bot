@@ -1,0 +1,655 @@
+"""
+Главный модуль Telegram-бота
+Автор: Sergey Akulov, Kam Aero
+GitHub: https://github.com/serg-akulov
+"""
+import asyncio
+import logging
+import re
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
+import config
+import database
+
+# --- Настройки ---
+logging.basicConfig(level=logging.INFO)
+
+# --- Глобальные переменные ---
+bot = Bot(token=config.BOT_TOKEN)
+dp = Dispatcher()
+
+# --- Машина состояний (основной заказ - станочные работы) ---
+class OrderForm(StatesGroup):
+    photo = State()
+    work_type = State()
+    dimensions = State()
+    conditions = State()
+    urgency = State()
+    extra_q = State()
+    comment = State()
+
+# --- Машина состояний для ремонта двигателя ---
+class EngineOrderForm(StatesGroup):
+    engine_brand = State()
+    engine_year = State()
+    engine_issue = State()
+    engine_urgency = State()
+    engine_comment = State()
+
+# --- Вспомогательные функции ---
+def get_text(key: str) -> str:
+    """Получает текст из базы по ключу. Если нет — возвращает заглушку."""
+    cfg = database.get_bot_config()
+    return cfg.get(key, f"[NO_DB_TEXT: {key}]")
+
+def get_config_bool(key: str) -> bool:
+    """Преобразует строку из базы в bool."""
+    return str(database.get_bot_config().get(key, '0')) == '1'
+
+def safe_text(message: types.Message) -> str:
+    """Безопасное извлечение текста из сообщения."""
+    if message.text:
+        return message.text
+    if message.caption:
+        return message.caption
+    if message.sticker:
+        return "[Стикер]"
+    if message.photo:
+        return "[Фото]"
+    return "[Неизвестно]"
+
+# --- Клавиатуры ---
+def kb_main_menu():
+    """Основное меню с двумя большими кнопками"""
+    buttons = [
+        [KeyboardButton(text="🔧 Ремонт двигателя")],
+        [KeyboardButton(text="⚙️ Станочные работы")]
+    ]
+    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True, one_time_keyboard=False)
+
+def kb_photo_step():
+    buttons = [[KeyboardButton(text="✅ Все фото отправлены")]]
+    if not get_config_bool('is_photo_required'):
+        buttons.append([KeyboardButton(text=get_text('btn_skip_photo'))])
+    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True, one_time_keyboard=True)
+
+def kb_work_type():
+    buttons = [
+        [InlineKeyboardButton(text=get_text('btn_type_repair'), callback_data="type_repair")],
+        [InlineKeyboardButton(text=get_text('btn_type_copy'), callback_data="type_copy")],
+        [InlineKeyboardButton(text=get_text('btn_type_drawing'), callback_data="type_drawing")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def kb_cond():
+    buttons = [
+        [InlineKeyboardButton(text=get_text('btn_cond_rotation'), callback_data="cond_rotation")],
+        [InlineKeyboardButton(text=get_text('btn_cond_static'), callback_data="cond_static")],
+        [InlineKeyboardButton(text=get_text('btn_cond_impact'), callback_data="cond_impact")],
+        [InlineKeyboardButton(text=get_text('btn_cond_unknown'), callback_data="cond_unknown")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def kb_urgency():
+    buttons = [
+        [InlineKeyboardButton(text=get_text('btn_urgency_high'), callback_data="urgency_high")],
+        [InlineKeyboardButton(text=get_text('btn_urgency_med'), callback_data="urgency_med")],
+        [InlineKeyboardButton(text=get_text('btn_urgency_low'), callback_data="urgency_low")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+# --- Основные хендлеры ---
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message, state: FSMContext):
+    await state.clear()
+    database.cancel_old_filling_orders(message.from_user.id)
+    welcome = get_text('welcome_msg')
+    await message.answer(
+        f"{welcome}\n\nВыберите тип заказа:",
+        reply_markup=kb_main_menu(),
+        parse_mode="HTML"
+    )
+
+@dp.message(Command("cancel"))
+async def cmd_cancel(message: types.Message, state: FSMContext):
+    await state.clear()
+    database.cancel_old_filling_orders(message.from_user.id)
+    await message.answer(get_text('msg_order_canceled'), reply_markup=kb_main_menu())
+
+# --- Кнопка: Ремонт двигателя ---
+@dp.message(F.text == "🔧 Ремонт двигателя")
+async def start_engine_flow(message: types.Message, state: FSMContext):
+    """Начало процесса заказа ремонта двигателя"""
+    print(f"DEBUG: Начало процесса ремонта двигателя для user_id={message.from_user.id}")
+
+    # Создаем запись в базе данных
+    user_id = message.from_user.id
+    database.cancel_old_filling_orders(user_id)
+    username = message.from_user.username or "NoNick"
+    full_name = message.from_user.full_name
+
+    order_id = database.create_order(user_id, username, full_name, order_type="engine_repair")
+    print(f"DEBUG: Создан заказ №{order_id} для engine_repair")
+
+    # Очищаем состояние и начинаем процесс
+    await state.clear()
+    await state.update_data(order_id=order_id)
+
+    await message.answer(
+        f"🆕 <b>Заказ №{order_id}</b>\n\n"
+        "🔧 <b>Упрощённый заказ — ремонт двигателя</b>\n\n"
+        "Введите марку и модель автомобиля (например: Toyota Camry):",
+        parse_mode="HTML",
+        reply_markup=types.ReplyKeyboardRemove()
+    )
+    await state.set_state(EngineOrderForm.engine_brand)
+
+# --- Кнопка: Станочные работы ---
+@dp.message(F.text == "⚙️ Станочные работы")
+async def start_machining_flow(message: types.Message, state: FSMContext):
+    await state.clear()
+    user_id = message.from_user.id
+    database.cancel_old_filling_orders(user_id)
+    username = message.from_user.username or "NoNick"
+    full_name = message.from_user.full_name
+
+    order_id = database.create_order(user_id, username, full_name, order_type="machining")
+    await state.update_data(order_id=order_id, photo_ids=[])
+    await message.answer(f"🆕 <b>Заказ №{order_id}</b>", parse_mode="HTML")
+    await message.answer(get_text('step_photo_text'), reply_markup=kb_photo_step(), parse_mode="Markdown")
+    await state.set_state(OrderForm.photo)
+
+# --- Основной заказ: фото → тип → размеры → условия → срочность → коммент ---
+@dp.message(OrderForm.photo, F.photo)
+async def process_photo(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    p_ids = data.get('photo_ids', [])
+    p_ids.append(message.photo[-1].file_id)
+    await state.update_data(photo_ids=p_ids)
+    await message.answer(f"📸 Фото {len(p_ids)} принято.", reply_markup=kb_photo_step())
+
+@dp.message(OrderForm.photo)
+async def process_photo_done(message: types.Message, state: FSMContext):
+    txt = safe_text(message)
+    data = await state.get_data()
+    p_ids = data.get('photo_ids', [])
+    skip_btn = get_text('btn_skip_photo')
+
+    if txt == "✅ Все фото отправлены":
+        if not p_ids:
+            await message.answer("⚠️ Вы не загрузили ни одного фото.")
+            return
+        database.update_order_field(data['order_id'], 'photo_file_id', ",".join(p_ids))
+        await message.answer("👍 Фото приняты.", reply_markup=types.ReplyKeyboardRemove())
+        await ask_work_type(message, state)
+    elif txt == skip_btn and not get_config_bool('is_photo_required'):
+        await message.answer("👍 Ок, без фото.", reply_markup=types.ReplyKeyboardRemove())
+        await ask_work_type(message, state)
+    else:
+        await check_lost_state(message, state)
+
+async def ask_work_type(message: types.Message, state: FSMContext):
+    await message.answer(get_text('step_type_text'), reply_markup=kb_work_type(), parse_mode="Markdown")
+    await state.set_state(OrderForm.work_type)
+
+@dp.callback_query(OrderForm.work_type)
+async def process_work_type(callback: types.CallbackQuery, state: FSMContext):
+    map_types = {
+        'type_repair': 'btn_type_repair',
+        'type_copy': 'btn_type_copy',
+        'type_drawing': 'btn_type_drawing'
+    }
+    key = map_types.get(callback.data)
+    if not key:
+        await callback.answer("Неверный выбор")
+        return
+    human = get_text(key)
+    order_id = (await state.get_data())['order_id']
+    database.update_order_field(order_id, 'work_type', human)
+    await callback.message.edit_text(f"✅ {human}")
+    await callback.message.answer(get_text('step_dim_text'), parse_mode="Markdown")
+    await state.set_state(OrderForm.dimensions)
+
+@dp.message(OrderForm.dimensions)
+async def process_dimensions(message: types.Message, state: FSMContext):
+    txt = safe_text(message)
+    order_id = (await state.get_data())['order_id']
+    database.update_order_field(order_id, 'dimensions_info', txt)
+    await message.answer(get_text('step_cond_text'), reply_markup=kb_cond(), parse_mode="Markdown")
+    await state.set_state(OrderForm.conditions)
+
+@dp.callback_query(OrderForm.conditions)
+async def process_conditions(callback: types.CallbackQuery, state: FSMContext):
+    map_cond = {
+        'cond_rotation': 'btn_cond_rotation',
+        'cond_static': 'btn_cond_static',
+        'cond_impact': 'btn_cond_impact',
+        'cond_unknown': 'btn_cond_unknown'
+    }
+    human = get_text(map_cond.get(callback.data))
+    order_id = (await state.get_data())['order_id']
+    database.update_order_field(order_id, 'conditions', human)
+    await callback.message.edit_text(f"✅ {human}")
+    await callback.message.answer(get_text('step_urgency_text'), reply_markup=kb_urgency(), parse_mode="Markdown")
+    await state.set_state(OrderForm.urgency)
+
+@dp.callback_query(OrderForm.urgency)
+async def process_urgency(callback: types.CallbackQuery, state: FSMContext):
+    map_urg = {
+        'urgency_high': 'btn_urgency_high',
+        'urgency_med': 'btn_urgency_med',
+        'urgency_low': 'btn_urgency_low'
+    }
+    human = get_text(map_urg.get(callback.data))
+    order_id = (await state.get_data())['order_id']
+    database.update_order_field(order_id, 'urgency', human)
+    await callback.message.edit_text(f"✅ {human}")
+    if get_config_bool('step_extra_enabled'):
+        await callback.message.answer(get_text('step_extra_text'), parse_mode="Markdown")
+        await state.set_state(OrderForm.extra_q)
+    else:
+        await ask_final(callback.message, state)
+
+@dp.message(OrderForm.extra_q)
+async def process_extra(message: types.Message, state: FSMContext):
+    txt = safe_text(message)
+    await state.update_data(temp_comment=f"Доп: {txt}\n")
+    await ask_final(message, state)
+
+async def ask_final(message: types.Message, state: FSMContext):
+    await message.answer(get_text('step_final_text'), parse_mode="Markdown")
+    await state.set_state(OrderForm.comment)
+
+@dp.message(OrderForm.comment)
+async def process_comment(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    comm = safe_text(message)
+    final_comm = data.get('temp_comment', '') + comm
+    order_id = data['order_id']
+    database.update_order_field(order_id, 'comment', final_comm)
+    database.finish_order_creation(order_id)
+    await message.answer(get_text('msg_done'), reply_markup=kb_main_menu(), parse_mode="Markdown")
+    await notify_admin(order_id)
+    await state.clear()
+
+async def notify_admin(order_id: int):
+    cfg = database.get_bot_config()
+    aid = cfg.get("admin_chat_id", "0")
+    if not aid or aid == '0':
+        return
+    order = database.get_order(order_id)
+    text = (f"🔔 <b>НОВЫЙ ЗАКАЗ №{order['id']}</b>\n"
+            f"Тип: Станочные работы\n"
+            f"👤: {order['full_name']} (@{order['username']})\n"
+            f"🛠: {order['work_type']}\n"
+            f"📏: {order['dimensions_info']}\n"
+            f"⚙️: {order['conditions']}\n"
+            f"⏳: {order['urgency']}\n"
+            f"📝: {order['comment']}\n\n"
+            f"<i>Reply для ответа.</i>")
+    try:
+        p_ids = order['photo_file_id'].split(',') if order['photo_file_id'] else []
+        if len(p_ids) > 1:
+            mg = [InputMediaPhoto(media=pid) for pid in p_ids]
+            await bot.send_media_group(aid, media=mg)
+        elif len(p_ids) == 1:
+            await bot.send_photo(aid, p_ids[0], caption=text, parse_mode="HTML")
+        else:
+            await bot.send_message(aid, text, parse_mode="HTML")
+    except Exception as e:
+        logging.error(f"Ошибка отправки админу: {e}")
+
+# --- Админка ---
+@dp.message(Command("iamadmin"))
+async def cmd_admin_auth(message: types.Message):
+    args = message.text.split()
+    if len(args) > 1 and args[1] == config.BOT_ADMIN_PASSWORD:
+        # СОХРАНЯЕМ ID админа в базу
+        database.update_setting("admin_chat_id", str(message.chat.id))
+        await message.answer("✅ Админ авторизован.")
+    else:
+        await message.answer("❌ Неверный пароль.")
+
+@dp.message(F.reply_to_message)
+async def admin_reply_handler(message: types.Message):
+    admin_chat_id = database.get_admin_chat_id()
+    if str(message.chat.id) != admin_chat_id:
+        return
+    orig = message.reply_to_message.caption or message.reply_to_message.text
+    if not orig:
+        return
+    match = re.search(r"(?:№|No|Num|Заказ)\s*[:#]?\s*(\d+)", orig, re.IGNORECASE)
+    if not match:
+        return
+    oid = int(match.group(1))
+    order = database.get_order(oid)
+    if not order:
+        return
+    try:
+        if message.text:
+            await bot.send_message(order['user_id'], f"👨‍🔧 <b>Мастер:</b>\n{message.text}", parse_mode="HTML")
+        else:
+            await message.copy_to(order['user_id'])
+        await message.react([types.ReactionTypeEmoji(emoji="👍")])
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+
+# --- Восстановление сессии ---
+async def check_lost_state(message: types.Message, state: FSMContext = None):
+    filling_id = database.get_active_order_id(message.from_user.id)
+    if filling_id:
+        order = database.get_order(filling_id)
+        has_photos = bool(order['photo_file_id'])
+        if not has_photos and not get_config_bool('is_photo_required'):
+            if state:
+                await state.update_data(order_id=filling_id)
+                await state.set_state(OrderForm.photo)
+            await process_photo_done(message, state)
+            return
+        if not order['work_type']:
+            await message.answer("⚠️ Восстановление: выберите тип работы", reply_markup=kb_work_type())
+            if state: await state.set_state(OrderForm.work_type)
+        elif not order['dimensions_info']:
+            database.update_order_field(filling_id, 'dimensions_info', safe_text(message))
+            await message.answer("✅ Размеры записаны. Условия?", reply_markup=kb_cond())
+            if state: await state.set_state(OrderForm.conditions)
+        else:
+            await process_comment(message, state or FSMContext(storage=dp.storage, key=None))
+
+# --- Админские команды ---
+@dp.message(Command("admin"))
+async def cmd_admin_panel(message: types.Message):
+    """Админ-панель"""
+    cfg = database.get_bot_config()
+    if str(message.chat.id) != str(cfg.get("admin_chat_id", "0")):
+        return
+
+    buttons = [
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
+        [InlineKeyboardButton(text="📋 Активные заказы", callback_data="admin_active")],
+        [InlineKeyboardButton(text="👥 Последние клиенты", callback_data="admin_clients")],
+    ]
+
+    await message.answer(
+        "🛠 <b>Админ-панель</b>\n\n"
+        "Выберите действие:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        parse_mode="HTML"
+    )
+
+@dp.callback_query(F.data.startswith("admin_"))
+async def admin_callback_handler(callback: types.CallbackQuery):
+    """Обработка админских кнопок"""
+    cfg = database.get_bot_config()
+    if str(callback.message.chat.id) != str(cfg.get("admin_chat_id", "0")):
+        await callback.answer("❌ Нет доступа")
+        return
+
+    action = callback.data
+
+    if action == "admin_stats":
+        # Статистика
+        stats = database.get_stats()
+        await callback.message.edit_text(
+            f"📊 <b>Статистика</b>\n\n"
+            f"Всего заказов: {stats.get('total_orders', 0)}\n"
+            f"Станочные работы: {stats.get('machining_orders', 0)}\n"
+            f"Ремонт двигателя: {stats.get('engine_orders', 0)}\n"
+            f"Активные: {stats.get('active_orders', 0)}\n"
+            f"Завершенные: {stats.get('completed_orders', 0)}",
+            parse_mode="HTML"
+        )
+
+    elif action == "admin_active":
+        # Активные заказы
+        active_orders = database.get_active_orders()
+        if not active_orders:
+            text = "📭 Нет активных заказов"
+        else:
+            text = "📋 <b>Активные заказы:</b>\n\n"
+            for order in active_orders[:10]:  # первые 10
+                text += f"🔸 №{order['id']}: {order['order_type']} - {order['created_at']}\n"
+
+        await callback.message.edit_text(text, parse_mode="HTML")
+
+    elif action == "admin_clients":
+        # Последние клиенты
+        recent_clients = database.get_recent_clients()
+        if not recent_clients:
+            text = "👥 Нет клиентов"
+        else:
+            text = "👥 <b>Последние клиенты:</b>\n\n"
+            for client in recent_clients[:10]:
+                text += f"👤 {client['full_name']} (@{client['username']})\n"
+                text += f"   Заказов: {client['order_count']}\n"
+                text += f"   Последний: {client['last_order']}\n\n"
+
+        await callback.message.edit_text(text, parse_mode="HTML")
+
+    await callback.answer()
+
+@dp.message(Command("debugsettings"))
+async def cmd_debug_settings(message: types.Message):
+    """Отладка настроек"""
+    cfg = database.get_bot_config()
+
+    text = "⚙️ <b>Текущие настройки:</b>\n\n"
+    for key, value in cfg.items():
+        text += f"<code>{key}</code>: {value}\n"
+
+    text += f"\n📱 <b>Ваш Chat ID:</b> {message.chat.id}"
+
+    await message.answer(text, parse_mode="HTML")
+
+@dp.message(Command("orders"))
+async def cmd_admin_orders(message: types.Message):
+    """Показать последние заказы"""
+    cfg = database.get_bot_config()
+    if str(message.chat.id) != str(cfg.get("admin_chat_id", "0")):
+        return
+
+    orders = database.get_recent_orders(limit=10)
+
+    if not orders:
+        await message.answer("📭 Нет заказов")
+        return
+
+    text = "📋 <b>Последние заказы:</b>\n\n"
+    for order in orders:
+        status = "✅" if order['status'] == 'completed' else "🔄"
+        text += f"{status} <b>№{order['id']}</b> - {order['order_type']}\n"
+        text += f"👤 {order['full_name']} (@{order['username']})\n"
+        text += f"📅 {order['created_at']}\n"
+        text += f"📝 {order['comment'][:50]}...\n\n"
+
+    await message.answer(text, parse_mode="HTML")
+
+# --- Тестовые команды ---
+@dp.message(F.text == "/test")
+async def test_command(message: types.Message):
+    await message.answer("✅ Бот работает! Команда /test получена.")
+
+@dp.message(F.text == "/engine_test")
+async def engine_test_command(message: types.Message):
+    await message.answer("✅ Проверка модуля engine_order...")
+    try:
+        import engine_order
+        await message.answer("✅ Модуль engine_order загружен успешно!")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка загрузки модуля: {e}")
+
+@dp.message(Command("adminstatus"))
+async def cmd_admin_status(message: types.Message):
+    """Проверка статуса админа"""
+    cfg = database.get_bot_config()
+    admin_chat_id = cfg.get("admin_chat_id", "0")
+
+    if admin_chat_id == "0" or not admin_chat_id:
+        await message.answer("❌ Админ не установлен. Используйте /iamadmin ПАРОЛЬ")
+    else:
+        await message.answer(f"✅ Админ установлен. Chat ID: {admin_chat_id}\nВаш Chat ID: {message.chat.id}")
+
+# --- Хендлеры для ремонта двигателя ---
+@dp.message(EngineOrderForm.engine_brand)
+async def engine_brand_handler(message: types.Message, state: FSMContext):
+    """Обработка марки автомобиля"""
+    print(f"DEBUG: engine_brand_handler вызван с текстом: {message.text}")
+
+    brand = message.text.strip()[:100]
+
+    if len(brand) < 2:
+        await message.answer("❌ Слишком короткое название. Введите марку и модель (например: Toyota Camry):")
+        return
+
+    await state.update_data(engine_brand=brand)
+    await message.answer(f"✅ Марка: {brand}\n\n📅 Введите год выпуска (например: 2015):")
+    await state.set_state(EngineOrderForm.engine_year)
+
+@dp.message(EngineOrderForm.engine_year)
+async def engine_year_handler(message: types.Message, state: FSMContext):
+    """Обработка года выпуска"""
+    print(f"DEBUG: engine_year_handler вызван с текстом: {message.text}")
+
+    year_text = message.text.strip()
+
+    if not re.match(r"^(19|20)\d{2}$", year_text):
+        await message.answer("❌ Введите корректный год в формате ГГГГ (например: 2010).")
+        return
+
+    year = int(year_text)
+    if year < 1900 or year > 2025:
+        await message.answer("❌ Введите реальный год выпуска (1900-2025).")
+        return
+
+    await state.update_data(engine_year=year_text)
+    await message.answer(f"✅ Год: {year_text}\n\n🔧 Опишите проблему своими словами:")
+    await state.set_state(EngineOrderForm.engine_issue)
+
+@dp.message(EngineOrderForm.engine_issue)
+async def engine_issue_handler(message: types.Message, state: FSMContext):
+    """Обработка описания проблемы"""
+    print(f"DEBUG: engine_issue_handler вызван с текстом: {message.text[:50]}...")
+
+    issue = message.text.strip()
+
+    if len(issue) < 5:
+        await message.answer("❌ Опишите подробнее (минимум 5 символов).")
+        return
+
+    await state.update_data(engine_issue=issue)
+
+    user_data = await state.get_data()
+    order_id = user_data.get('order_id')
+
+    if order_id:
+        current_data = f"Марка: {user_data.get('engine_brand')}\nГод: {user_data.get('engine_year')}\nПроблема: {issue}"
+        database.update_order_field(order_id, 'comment', current_data)
+
+    await message.answer("✅ Проблема сохранена!\n\n⚡ Выберите срочность:", reply_markup=kb_urgency())
+    await state.set_state(EngineOrderForm.engine_urgency)
+
+@dp.callback_query(EngineOrderForm.engine_urgency)
+async def engine_urgency_handler(callback: types.CallbackQuery, state: FSMContext):
+    """Обработка выбора срочности"""
+    print(f"DEBUG: engine_urgency_handler вызван с callback.data: {callback.data}")
+
+    urgency_map = {
+        'urgency_high': 'Высокая',
+        'urgency_med': 'Средняя',
+        'urgency_low': 'Низкая'
+    }
+
+    if callback.data not in urgency_map:
+        await callback.answer("❌ Неверный выбор")
+        return
+
+    urgency = urgency_map[callback.data]
+    await state.update_data(engine_urgency=urgency)
+
+    user_data = await state.get_data()
+    order_id = user_data.get('order_id')
+
+    if order_id:
+        database.update_order_field(order_id, 'urgency', urgency)
+
+    await callback.message.edit_text(f"✅ Срочность: {urgency}")
+    await callback.message.answer(
+        "💬 Есть ли дополнительные пожелания или комментарии?\n"
+        "(Если нет, напишите 'нет' или 'готово'):"
+    )
+    await state.set_state(EngineOrderForm.engine_comment)
+
+@dp.message(EngineOrderForm.engine_comment)
+async def engine_comment_handler(message: types.Message, state: FSMContext):
+    """Обработка финального комментария"""
+    print(f"DEBUG: engine_comment_handler вызван с текстом: {message.text}")
+
+    comment = message.text.strip()
+
+    user_data = await state.get_data()
+    order_id = user_data.get('order_id')
+
+    if order_id:
+        order = database.get_order(order_id)
+        existing_comment = order['comment'] or ''
+
+        if comment.lower() not in ['нет', 'готово', 'no', 'done', 'н', 'без комментариев']:
+            final_comment = f"{existing_comment}\n\nДополнительно: {comment}"
+            await state.update_data(engine_comment=comment)
+        else:
+            final_comment = existing_comment
+            await state.update_data(engine_comment='Нет комментариев')
+
+        database.update_order_field(order_id, 'comment', final_comment)
+        database.finish_order_creation(order_id)
+
+        # Отправляем уведомление админу
+        await notify_engine_admin(order_id, user_data)
+
+        await message.answer(
+            "🎉 <b>Заказ на ремонт двигателя успешно оформлен!</b>\n\n"
+            f"📋 <b>Номер заказа:</b> №{order_id}\n"
+            f"🚗 <b>Марка:</b> {user_data.get('engine_brand', 'Не указано')}\n"
+            f"📅 <b>Год:</b> {user_data.get('engine_year', 'Не указано')}\n"
+            f"🔧 <b>Проблема:</b> {user_data.get('engine_issue', 'Не указано')}\n"
+            f"⏳ <b>Срочность:</b> {user_data.get('engine_urgency', 'Не указано')}\n\n"
+            "Наш специалист свяжется с вами в ближайшее время.",
+            reply_markup=kb_main_menu(),
+            parse_mode="HTML"
+        )
+
+    await state.clear()
+
+async def notify_engine_admin(order_id: int, user_data: dict):
+    """Отправка уведомления админу о заказе двигателя"""
+    cfg = database.get_bot_config()
+    aid = cfg.get("admin_chat_id", "0")
+    if not aid or aid == '0':
+        return
+
+    order = database.get_order(order_id)
+    text = (f"🔔 <b>НОВЫЙ ЗАКАЗ №{order['id']}</b>\n"
+            f"Тип: Ремонт двигателя\n"
+            f"👤: {order['full_name']} (@{order['username']})\n"
+            f"🚗 Марка: {user_data.get('engine_brand', 'Не указано')}\n"
+            f"📅 Год: {user_data.get('engine_year', 'Не указано')}\n"
+            f"🔧 Проблема: {user_data.get('engine_issue', 'Не указано')}\n"
+            f"⏳ Срочность: {user_data.get('engine_urgency', 'Не указано')}\n"
+            f"📝 Комментарий: {order['comment']}\n\n"
+            f"<i>Reply для ответа.</i>")
+
+    try:
+        await bot.send_message(aid, text, parse_mode="HTML")
+    except Exception as e:
+        logging.error(f"Ошибка отправки админу (двигатель): {e}")
+
+# --- Запуск бота ---
+async def main():
+    print("✅ Бот запущен...")
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())

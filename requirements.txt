@@ -1,0 +1,12 @@
+aiogram==3.10.0
+pymysql
+python-dotenv
+streamlit
+pandas
+cryptography
+gspread
+oauth2client>=4.1.0
+google-api-python-client>=2.0.0
+google-auth>=2.0.0
+google-auth-oauthlib>=0.5.0
+google-auth-httplib2>=0.1.0

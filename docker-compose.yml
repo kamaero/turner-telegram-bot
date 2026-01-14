@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    container_name: turner-bot
+    restart: unless-stopped
+    depends_on:
+      - mysql
+    environment:
+      - BOT_TOKEN=BOT_TOKEN_PLACEHOLDER
+      - DB_HOST=mysql
+      - DB_NAME=${DB_NAME:-turner_db}
+      - DB_USER=${DB_USER:-turner_user}
+      - DB_PASS=${DB_PASS:-turner_password}
+      - ADMIN_PANEL_PASSWORD=${ADMIN_PANEL_PASSWORD:-admin123}
+      - BOT_ADMIN_PASSWORD=${BOT_ADMIN_PASSWORD:-botadmin123}
+      - WAIT_FOR_DB=true
+    networks:
+      - turner-network
+
+  mysql:
+    image: mysql:8
+    container_name: turner-mysql
+    restart: unless-stopped
+    environment:
+      - MYSQL_ROOT_PASSWORD=${DB_ROOT_PASSWORD:-root_password}
+      - MYSQL_DATABASE=${DB_NAME:-turner_db}
+      - MYSQL_USER=${DB_USER:-turner_user}
+      - MYSQL_PASSWORD=${DB_PASS:-turner_password}
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql
+      - ./config/service_account.json:/app/path/to/your/service_account.json
+    networks:
+      - turner-network
+
+networks:
+  turner-network:
+    driver: bridge
+
+volumes:
+  mysql_data:
