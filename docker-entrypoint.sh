@@ -23,15 +23,15 @@ ADMIN_PANEL_PASSWORD=${ADMIN_PANEL_PASSWORD:-admin123}
 BOT_ADMIN_PASSWORD=${BOT_ADMIN_PASSWORD:-botadmin123}
 EOL
 
-cat > php_config.php <<EOL
-<?php
-\$db_host = '$DB_HOST';
-\$db_user = '$DB_USER';
-\$db_pass = '$DB_PASS';
-\$db_name = '$DB_NAME';
-\$admin_pass = '${ADMIN_PANEL_PASSWORD:-admin123}';
-?>
-EOL
+#cat > php_config.php <<EOL
+#<?php
+#\$db_host = '$DB_HOST';
+#\$db_user = '$DB_USER';
+#\$db_pass = '$DB_PASS';
+#\$db_name = '$DB_NAME';
+#\$admin_pass = '${ADMIN_PANEL_PASSWORD:-admin123}';
+#?>
+#EOL
 
 if [ "$WAIT_FOR_DB" = "true" ]; then
     echo "Ожидание доступности БД..."

@@ -1,31 +1,24 @@
 FROM python:3.11-slim
 
+WORKDIR /app
+
+# Устанавливаем системные зависимости
 RUN apt-get update && apt-get install -y \
     gcc \
     default-libmysqlclient-dev \
     pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
-RUN useradd -m -u 1000 botuser
-
-WORKDIR /app
-
+# Копируем зависимости
 COPY requirements.txt .
-COPY schema.sql .
-
 RUN pip install --no-cache-dir -r requirements.txt
-RUN pip install cryptography pymysql
 
+# Копируем все файлы проекта
 COPY . .
 
-RUN touch .env php_config.php
+# Делаем entrypoint исполняемым
+RUN chmod +x docker-entrypoint.sh
 
-RUN chown -R botuser:botuser /app
-
-USER botuser
-
-COPY --chown=botuser:botuser docker-entrypoint.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
-
-ENTRYPOINT ["docker-entrypoint.sh"]
-CMD ["python", "bot.py"]
+# Указываем entrypoint и команду по умолчанию
+ENTRYPOINT ["./docker-entrypoint.sh"]
+CMD ["python3", "bot.py"]

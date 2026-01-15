@@ -1,43 +1,55 @@
 version: '3.8'
 
 services:
-  bot:
-    build: .
-    container_name: turner-bot
-    restart: unless-stopped
-    depends_on:
-      - mysql
+  mysql_db:
+    image: mysql:8.0
+    restart: always
     environment:
-      - BOT_TOKEN=BOT_TOKEN_PLACEHOLDER
-      - DB_HOST=mysql
-      - DB_NAME=${DB_NAME:-turner_db}
-      - DB_USER=${DB_USER:-turner_user}
-      - DB_PASS=${DB_PASS:-turner_password}
-      - ADMIN_PANEL_PASSWORD=${ADMIN_PANEL_PASSWORD:-admin123}
-      - BOT_ADMIN_PASSWORD=${BOT_ADMIN_PASSWORD:-botadmin123}
-      - WAIT_FOR_DB=true
-    networks:
-      - turner-network
-
-  mysql:
-    image: mysql:8
-    container_name: turner-mysql
-    restart: unless-stopped
-    environment:
-      - MYSQL_ROOT_PASSWORD=${DB_ROOT_PASSWORD:-root_password}
-      - MYSQL_DATABASE=${DB_NAME:-turner_db}
-      - MYSQL_USER=${DB_USER:-turner_user}
-      - MYSQL_PASSWORD=${DB_PASS:-turner_password}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-rootpassword123}  # ОТДЕЛЬНЫЙ root пароль
+      MYSQL_DATABASE: ${DB_NAME:-turner_bot}
+      MYSQL_USER: ${DB_USER:-app_user}
+      MYSQL_PASSWORD: ${DB_PASS:-app_password123}
     volumes:
       - mysql_data:/var/lib/mysql
-      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql
-      - ./config/service_account.json:/app/path/to/your/service_account.json
-    networks:
-      - turner-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    ports:
+      - "3306:3306"  # ВНЕШНИЙ ДОСТУП для отладки
 
-networks:
-  turner-network:
-    driver: bridge
+  turner-bot:
+    build: .
+    restart: always
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - BOT_ADMIN_PASSWORD=${BOT_ADMIN_PASSWORD:-botadmin123}
+      - DB_HOST=mysql_db
+      - DB_USER=${DB_USER:-app_user}
+      - DB_PASS=${DB_PASS:-app_password123}
+      - DB_NAME=${DB_NAME:-turner_bot}
+      - WAIT_FOR_DB=true
+    depends_on:
+      mysql_db:
+        condition: service_healthy
+
+  web-admin:
+    image: php:8.2-apache
+    restart: always
+    ports:
+      - "8080:80"
+    volumes:
+      - ./admin:/var/www/html
+    environment:
+      - DB_HOST=mysql_db
+      - DB_NAME=${DB_NAME:-turner_bot}
+      - DB_USER=${DB_USER:-app_user}
+      - DB_PASS=${DB_PASS:-app_password123}
+      - ADMIN_PANEL_PASSWORD=${ADMIN_PANEL_PASSWORD:-admin123}
+    depends_on:
+      mysql_db:
+        condition: service_healthy
 
 volumes:
   mysql_data:
