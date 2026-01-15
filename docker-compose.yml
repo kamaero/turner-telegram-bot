@@ -5,7 +5,7 @@ services:
     image: mysql:8.0
     restart: always
     environment:
-      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-rootpassword123}  # ОТДЕЛЬНЫЙ root пароль
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-rootpassword123}
       MYSQL_DATABASE: ${DB_NAME:-turner_bot}
       MYSQL_USER: ${DB_USER:-app_user}
       MYSQL_PASSWORD: ${DB_PASS:-app_password123}
@@ -16,8 +16,6 @@ services:
       timeout: 10s
       retries: 10
       start_period: 30s
-    ports:
-      - "3306:3306"  # ВНЕШНИЙ ДОСТУП для отладки
 
   turner-bot:
     build: .
@@ -35,7 +33,9 @@ services:
         condition: service_healthy
 
   web-admin:
-    image: php:8.2-apache
+    build:
+      context: .
+      dockerfile: Dockerfile-web-admin
     restart: always
     ports:
       - "8080:80"

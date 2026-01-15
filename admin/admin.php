@@ -35,13 +35,13 @@ if ($mysqli->connect_error) {
 $mysqli->set_charset("utf8mb4");
 
 // Получение токена
-$stmt = $mysqli->prepare("SELECT value_text FROM settings WHERE key_name = ?");
+$stmt = $mysqli->prepare("SELECT cfg_value FROM bot_config WHERE cfg_key = ?");
 $stmt->bind_param("s", $token_key);
 $token_key = "bot_token";
 $stmt->execute();
 $result = $stmt->get_result();
 $token_row = $result->fetch_assoc();
-$BOT_TOKEN = $token_row['value_text'] ?? '';
+$BOT_TOKEN = $token_row['cfg_value'] ?? '';
 $stmt->close();
 
 // --- Режим просмотра фото ---
@@ -150,7 +150,7 @@ $selected_year = (int)($_GET['y'] ?? date('Y'));
 function build_query($type = 'all', $search = '', $month = null, $year = null) {
     global $mysqli;
     $where = ["status != 'filling'"];
-    if ($type === 'engine') $where[] = "order_type = 'engine'";
+    if ($type === 'engine_repair') $where[] = "order_type = 'engine_repair'";
     elseif ($type === 'machining') $where[] = "order_type IN ('standard', 'machining')";
     if ($search) {
         $safe_search = $mysqli->real_escape_string($search);
@@ -185,13 +185,13 @@ function get_stats($mysqli) {
 
 $stats = get_stats($mysqli);
 $orders = $mysqli->query(build_query('all', $search, $selected_month, $selected_year));
-$engines = $mysqli->query(build_query('engine', $search));
+$engines = $mysqli->query(build_query('engine_repair', $search));
 
 // --- Загрузка конфигурации бота ---
 $config_result = $mysqli->query("SELECT * FROM bot_config");
 $cfg = [];
 while ($row = $config_result->fetch_assoc()) {
-    $cfg[$row['cfg_key']] = $row['value_text'];
+    $cfg[$row['cfg_key']] = $row['cfg_value'];
 }
 
 function render_input($key, $label, $rows = 2) {
@@ -210,7 +210,7 @@ function render_switch($key, $label) {
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Metalok CRM</title>
+    <title>Моторист УФА - CRM</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
@@ -226,7 +226,7 @@ function render_switch($key, $label) {
 <body class="bg-light pb-5">
 <nav class="navbar navbar-dark bg-dark sticky-top mb-4">
     <div class="container">
-        <span class="navbar-brand mb-0 h1">🛠 Metalok CRM</span>
+        <span class="navbar-brand mb-0 h1">🛠 Моторист УФА - CRM</span>
         <a href="?logout=1" class="btn btn-outline-danger btn-sm">Выход</a>
     </div>
 </nav>
@@ -271,7 +271,7 @@ function render_switch($key, $label) {
                             <tr class="order-row">
                                 <td>#<?= $row['id'] ?></td>
                                 <td><small><?= date('d.m H:i', strtotime($row['created_at'])) ?></small></td>
-                                <td><span class="badge bg-primary"><?= $row['order_type'] === 'engine' ? '🔧 Двигатель' : '⚙️ Станок' ?></span></td>
+                                <td><span class="badge bg-primary"><?= $row['order_type'] === 'engine_repair' ? '🔧 Двигатель' : '⚙️ Станок' ?></span></td>
                                 <td><span class="badge <?= $status_map[$row['status']]['class'] ?>"><?= $status_map[$row['status']]['text'] ?></span></td>
                                 <td><b><?= htmlspecialchars($row['full_name'], ENT_QUOTES, 'UTF-8') ?></b><br>@<?= htmlspecialchars($row['username'] ?? '-', ENT_QUOTES, 'UTF-8') ?></td>
                                 <td><?= htmlspecialchars(mb_strimwidth($row['work_type'] ?? $row['comment'] ?? '', 0, 60, '...'), ENT_QUOTES, 'UTF-8') ?></td>
@@ -399,8 +399,8 @@ modal.addEventListener('show.bs.modal', function (event) {
     document.getElementById('m_id').innerText = data.id;
     document.getElementById('input_id').value = data.id;
     document.getElementById('m_client').innerText = data.full_name + ' (@' + (data.username || '-') + ')';
-    document.getElementById('m_type').innerText = data.order_type === 'engine' ? '🔧 Ремонт двигателя' : (data.work_type || '–');
-    document.getElementById('m_car').innerText = data.order_type === 'engine' ? data.dimensions_info : '–';
+    document.getElementById('m_type').innerText = data.order_type === 'engine_repair' ? '🔧 Ремонт двигателя' : (data.work_type || '–');
+    document.getElementById('m_car').innerText = data.order_type === 'engine_repair' ? data.dimensions_info : '–';
     document.getElementById('m_urgency').innerText = data.urgency || '–';
     document.getElementById('m_comment').innerText = data.comment || '–';
     document.getElementById('m_note').value = data.internal_note || '';
