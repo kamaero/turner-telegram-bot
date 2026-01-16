@@ -145,30 +145,64 @@ if (isset($_POST['update_order'])) {
 function extract_phone_from_comment($comment) {
     if (empty($comment)) return '';
 
-    // Ищем телефонные номера в различных форматах
-    $patterns = [
-        '/(?:\+7|7|8)?[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}/', // Российские номера
-        '/(?:\+?\d{1,3}[\s\-]?)?\(?\d{1,4}\)?[\s\-]?\d{1,4}[\s\-]?\d{1,4}[\s\-]?\d{1,4}/', // Международные
-    ];
-
-    foreach ($patterns as $pattern) {
-        if (preg_match($pattern, $comment, $matches)) {
-            $phone = preg_replace('/[^\d\+]/', '', $matches[0]);
-
-            // Форматируем российский номер
-            if (preg_match('/^(\+?7|8)(\d{3})(\d{3})(\d{2})(\d{2})$/', $phone, $matches_ru)) {
-                return '+7 (' . $matches_ru[2] . ') ' . $matches_ru[3] . '-' . $matches_ru[4] . '-' . $matches_ru[5];
+    // 1. Ищем 11 цифр подряд (например: 89160856070)
+    if (preg_match('/\b(\d{11})\b/', $comment, $matches)) {
+        $phone = $matches[1];
+        // 89160856070 → +7 (916) 085-60-70
+        if ($phone[0] == '8' || $phone[0] == '7') {
+            $digits = substr($phone, 1); // Убираем первую цифру
+            if (strlen($digits) == 10) {
+                return '+7 (' . substr($digits, 0, 3) . ') ' .
+                       substr($digits, 3, 3) . '-' .
+                       substr($digits, 6, 2) . '-' .
+                       substr($digits, 8, 2);
             }
-
-            return $phone;
         }
     }
 
-    // Если не нашли форматированный номер, ищем слова "тел", "телефон", "номер"
-    if (preg_match('/(?:тел[\.]?|телефон|номер)[\s:]*([\+\d\s\-\(\)]{7,})/iu', $comment, $matches)) {
-        $phone = preg_replace('/[^\d\+]/', '', $matches[1]);
-        if (strlen($phone) >= 7) {
-            return $phone;
+    // 2. Ищем 10 цифр подряд (например: 9160856070)
+    if (preg_match('/\b(\d{10})\b/', $comment, $matches)) {
+        $phone = $matches[1];
+        // 9160856070 → +7 (916) 085-60-70
+        if (strlen($phone) == 10) {
+            return '+7 (' . substr($phone, 0, 3) . ') ' .
+                   substr($phone, 3, 3) . '-' .
+                   substr($phone, 6, 2) . '-' .
+                   substr($phone, 8, 2);
+        }
+    }
+
+    // 3. Ищем номер в формате с разделителями
+    // Исправленное регулярное выражение: ищем 3-3-2-2 или 3-3-2-3 цифр
+    if (preg_match('/(?:\+7|7|8)?[\s\-]?\(?(\d{3})\)?[\s\-]?(\d{3})[\s\-]?(\d{2})[\s\-]?(\d{2,3})/', $comment, $matches)) {
+        // $matches[1] = 916, $matches[2] = 085, $matches[3] = 60, $matches[4] = 70 или 070
+        $last_digits = $matches[4];
+        // Если последняя группа из 3 цифр, берем последние 2
+        if (strlen($last_digits) == 3) {
+            $last_digits = substr($last_digits, 1);
+        }
+        return '+7 (' . $matches[1] . ') ' . $matches[2] . '-' . $matches[3] . '-' . $last_digits;
+    }
+
+    // 4. Ищем по ключевым словам "тел", "телефон", "номер"
+    if (preg_match('/(?:тел[\.]?|телефон|номер)[\s:]*([\+\d\s\-\(\)\.]{7,})/iu', $comment, $matches)) {
+        $phone = preg_replace('/[^\d]/', '', $matches[1]);
+
+        if (strlen($phone) == 11 && ($phone[0] == '8' || $phone[0] == '7')) {
+            $digits = substr($phone, 1);
+            if (strlen($digits) == 10) {
+                return '+7 (' . substr($digits, 0, 3) . ') ' .
+                       substr($digits, 3, 3) . '-' .
+                       substr($digits, 6, 2) . '-' .
+                       substr($digits, 8, 2);
+            }
+        }
+
+        if (strlen($phone) == 10) {
+            return '+7 (' . substr($phone, 0, 3) . ') ' .
+                   substr($phone, 3, 3) . '-' .
+                   substr($phone, 6, 2) . '-' .
+                   substr($phone, 8, 2);
         }
     }
 
@@ -285,21 +319,36 @@ function render_switch($key, $label) {
 
     <div class="tab-content">
         <!-- Все заказы -->
-        <div class="tab-pane fade show active" id="orders">
-            <div class="filter-bar d-flex align-items-center gap-2 shadow-sm mb-3">
-                <input type="text" name="search" class="form-control form-control-sm" placeholder="Поиск по клиенту, комментарию..." value="<?= htmlspecialchars($search) ?>" style="width:300px;">
-                <select name="m" class="form-select form-select-sm" style="width:auto;" onchange="updateFilters()">
-                    <?php for ($i = 1; $i <= 12; $i++): $name = date('F', mktime(0, 0, 0, $i, 10)); ?>
-                        <option value="<?= $i ?>" <?= $i == $selected_month ? 'selected' : '' ?>><?= $name ?></option>
-                    <?php endfor; ?>
-                </select>
-                <select name="y" class="form-select form-select-sm" style="width:auto;" onchange="updateFilters()">
-                    <?php for ($y = 2024; $y <= 2030; $y++): ?>
-                        <option value="<?= $y ?>" <?= $y == $selected_year ? 'selected' : '' ?>><?= $y ?></option>
-                    <?php endfor; ?>
-                </select>
-                <button type="button" class="btn btn-sm btn-primary" onclick="updateFilters()">🔍 Применить</button>
-            </div>
+            <div class="tab-pane fade show active" id="orders">
+                <div class="filter-bar d-flex align-items-center gap-2 shadow-sm mb-3">
+                    <input type="text" name="search" class="form-control form-control-sm" placeholder="Поиск по клиенту, комментарию..." value="<?= htmlspecialchars($search) ?>" style="width:300px;">
+                    <select name="m" class="form-select form-select-sm" style="width:auto;" onchange="updateFilters()">
+                        <?php
+                        $russian_months = [
+                            1 => 'Январь',
+                            2 => 'Февраль',
+                            3 => 'Март',
+                            4 => 'Апрель',
+                            5 => 'Май',
+                            6 => 'Июнь',
+                            7 => 'Июль',
+                            8 => 'Август',
+                            9 => 'Сентябрь',
+                            10 => 'Октябрь',
+                            11 => 'Ноябрь',
+                            12 => 'Декабрь'
+                        ];
+                        for ($i = 1; $i <= 12; $i++): ?>
+                            <option value="<?= $i ?>" <?= $i == $selected_month ? 'selected' : '' ?>><?= $russian_months[$i] ?></option>
+                        <?php endfor; ?>
+                    </select>
+                    <select name="y" class="form-select form-select-sm" style="width:auto;" onchange="updateFilters()">
+                        <?php for ($y = 2024; $y <= 2030; $y++): ?>
+                            <option value="<?= $y ?>" <?= $y == $selected_year ? 'selected' : '' ?>><?= $y ?></option>
+                        <?php endfor; ?>
+                    </select>
+                    <button type="button" class="btn btn-sm btn-primary" onclick="updateFilters()">🔍 Применить</button>
+                </div>
 
             <div class="table-responsive bg-white shadow rounded p-3">
                 <table class="table table-hover align-middle">
@@ -663,17 +712,36 @@ modal.addEventListener('show.bs.modal', function (event) {
     // Извлекаем телефон из комментария для модального окна
     const comment = data.comment || '';
     let phone = '';
+
     if (comment) {
-        // Простая регулярка для поиска телефона
-        const phoneMatch = comment.match(/(?:\+7|7|8)?[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}/);
-        if (phoneMatch) {
-            phone = phoneMatch[0].replace(/[^\d\+]/g, '');
-            // Форматируем
-            if (phone.match(/^(\+?7|8)(\d{3})(\d{3})(\d{2})(\d{2})$/)) {
-                phone = phone.replace(/^(\+?7|8)(\d{3})(\d{3})(\d{2})(\d{2})$/, '+7 ($2) $3-$4-$5');
+        // Ищем 11 цифр подряд
+        const phoneMatch11 = comment.match(/\b(\d{11})\b/);
+        if (phoneMatch11) {
+            const phone11 = phoneMatch11[1];
+            if (phone11[0] === '8' || phone11[0] === '7') {
+                const digits = phone11.substring(1);
+                if (digits.length === 10) {
+                    phone = '+7 (' + digits.substring(0, 3) + ') ' +
+                            digits.substring(3, 6) + '-' +
+                            digits.substring(6, 8) + '-' +
+                            digits.substring(8, 10);
+                }
+            }
+        } else {
+            // Ищем 10 цифр подряд
+            const phoneMatch10 = comment.match(/\b(\d{10})\b/);
+            if (phoneMatch10) {
+                const phone10 = phoneMatch10[1];
+                if (phone10.length === 10) {
+                    phone = '+7 (' + phone10.substring(0, 3) + ') ' +
+                            phone10.substring(3, 6) + '-' +
+                            phone10.substring(6, 8) + '-' +
+                            phone10.substring(8, 10);
+                }
             }
         }
     }
+
     document.getElementById('m_phone').innerHTML = phone ?
         '<a href="tel:' + phone + '" class="phone-link">📞 ' + phone + '</a>' :
         '<span class="text-muted">–</span>';
