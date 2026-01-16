@@ -12,7 +12,7 @@ if 'auth' not in st.session_state:
     st.session_state.auth = False
 
 def login():
-    st.title("Вход в систему Metalok")
+    st.title("Вход в систему МОТОРИСТ УФА CRM")
     pwd = st.text_input("Пароль", type="password")
     if st.button("Войти"):
         if pwd == config.ADMIN_PANEL_PASSWORD:

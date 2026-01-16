@@ -39,6 +39,14 @@ class EngineOrderForm(StatesGroup):
     engine_urgency = State()
     engine_comment = State()
 
+# --- Машина состояний для ответов админа ---
+class AdminReplyForm(StatesGroup):
+    waiting_for_reply = State()
+
+class CommentForm(StatesGroup):
+    waiting_comment = State()
+    waiting_engine_comment = State()
+
 # --- Вспомогательные функции ---
 def get_text(key: str) -> str:
     """Получает текст из базы по ключу. Если нет — возвращает заглушку."""
@@ -100,6 +108,14 @@ def kb_urgency():
         [InlineKeyboardButton(text=get_text('btn_urgency_low'), callback_data="urgency_low")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def kb_final_step():
+    """Клавиатура для финального шага"""
+    buttons = [
+        [KeyboardButton(text="✅ Оформить заказ")],
+        [KeyboardButton(text="✍️ Добавить комментарий")]
+    ]
+    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True, one_time_keyboard=True)
 
 # --- Основные хендлеры ---
 @dp.message(Command("start"))
@@ -260,18 +276,77 @@ async def process_extra(message: types.Message, state: FSMContext):
     await ask_final(message, state)
 
 async def ask_final(message: types.Message, state: FSMContext):
-    await message.answer(get_text('step_final_text'), parse_mode="Markdown")
+    """Финальный шаг с кнопками"""
+    await message.answer(
+        "🎯 *Почти готово!*\n\n"
+        "Хотите добавить комментарий к заказу? Например:\n"
+        "• Особые требования\n"
+        "• Пожелания по срокам\n"
+        "• Контакт для связи\n\n"
+        "Если всё ясно — просто нажмите кнопку '✅ Оформить заказ'",
+        parse_mode="Markdown",
+        reply_markup=kb_final_step()
+    )
     await state.set_state(OrderForm.comment)
 
 @dp.message(OrderForm.comment)
 async def process_comment(message: types.Message, state: FSMContext):
+    """Обработка финального шага с кнопками"""
     data = await state.get_data()
-    comm = safe_text(message)
-    final_comm = data.get('temp_comment', '') + comm
+    txt = safe_text(message)
     order_id = data['order_id']
-    database.update_order_field(order_id, 'comment', final_comm)
+
+    # Если нажали "✅ Оформить заказ"
+    if txt == "✅ Оформить заказ":
+        final_comm = data.get('temp_comment', '') + "Нет дополнительных комментариев"
+
+    # Если нажали "✍️ Добавить комментарий" или написали текст
+    elif txt == "✍️ Добавить комментарий":
+        await message.answer(
+            "✍️ Напишите ваш комментарий к заказу:\n\n"
+            "(Можете написать любые пожелания, вопросы или оставить пустым)",
+            parse_mode="Markdown",
+            reply_markup=types.ReplyKeyboardRemove()
+        )
+        # Меняем состояние на ожидание комментария
+        await state.set_state(CommentForm.waiting_comment)
+        return
+
+    else:
+        # Это пользовательский комментарий
+        final_comm = data.get('temp_comment', '') + txt
+        await finish_order(order_id, final_comm, message, state)
+        return
+
+    # Если нажали "✅ Оформить заказ"
+    await finish_order(order_id, final_comm, message, state)
+
+@dp.message(CommentForm.waiting_comment)
+async def process_user_comment(message: types.Message, state: FSMContext):
+    """Обработка пользовательского комментария"""
+    data = await state.get_data()
+    txt = safe_text(message)
+    order_id = data['order_id']
+
+    final_comm = data.get('temp_comment', '') + txt
+
+    # Завершаем заказ
+    await finish_order(order_id, final_comm, message, state)
+
+async def finish_order(order_id: int, comment: str, message: types.Message, state: FSMContext):
+    """Завершение оформления заказа"""
+    database.update_order_field(order_id, 'comment', comment)
     database.finish_order_creation(order_id)
-    await message.answer(get_text('msg_done'), reply_markup=kb_main_menu(), parse_mode="Markdown")
+
+    await message.answer(
+        "🎉 *Заказ успешно оформлен!*\n\n"
+        f"📋 *Номер заказа:* №{order_id}\n\n"
+        "Мы свяжемся с вами в ближайшее время для уточнения деталей.\n"
+        "Спасибо за заказ! ✅",
+        reply_markup=kb_main_menu(),
+        parse_mode="Markdown"
+    )
+
     await notify_admin(order_id)
     await state.clear()
 
@@ -281,6 +356,12 @@ async def notify_admin(order_id: int):
     if not aid or aid == '0':
         return
     order = database.get_order(order_id)
+
+    # Создаем кнопку "Ответить" под сообщением
+    reply_markup = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💬 Ответить клиенту", callback_data=f"reply_{order_id}")]
+    ])
+
     text = (f"🔔 <b>НОВЫЙ ЗАКАЗ №{order['id']}</b>\n"
             f"Тип: Станочные работы\n"
             f"👤: {order['full_name']} (@{order['username']})\n"
@@ -288,17 +369,30 @@ async def notify_admin(order_id: int):
             f"📏: {order['dimensions_info']}\n"
             f"⚙️: {order['conditions']}\n"
             f"⏳: {order['urgency']}\n"
-            f"📝: {order['comment']}\n\n"
-            f"<i>Reply для ответа.</i>")
+            f"📝: {order['comment'] or 'Нет комментариев'}")
+
     try:
         p_ids = order['photo_file_id'].split(',') if order['photo_file_id'] else []
         if len(p_ids) > 1:
             mg = [InputMediaPhoto(media=pid) for pid in p_ids]
             await bot.send_media_group(aid, media=mg)
+            # Отправляем отдельно текст с кнопкой
+            await bot.send_message(aid, text, parse_mode="HTML", reply_markup=reply_markup)
         elif len(p_ids) == 1:
-            await bot.send_photo(aid, p_ids[0], caption=text, parse_mode="HTML")
+            await bot.send_photo(
+                aid,
+                p_ids[0],
+                caption=text,
+                parse_mode="HTML",
+                reply_markup=reply_markup
+            )
         else:
-            await bot.send_message(aid, text, parse_mode="HTML")
+            await bot.send_message(
+                aid,
+                text,
+                parse_mode="HTML",
+                reply_markup=reply_markup
+            )
     except Exception as e:
         logging.error(f"Ошибка отправки админу: {e}")
 
@@ -315,6 +409,7 @@ async def cmd_admin_auth(message: types.Message):
 
 @dp.message(F.reply_to_message)
 async def admin_reply_handler(message: types.Message):
+    """Старый обработчик Reply (оставлен для совместимости)"""
     admin_chat_id = database.get_admin_chat_id()
     if str(message.chat.id) != admin_chat_id:
         return
@@ -504,6 +599,12 @@ async def engine_brand_handler(message: types.Message, state: FSMContext):
         await message.answer("❌ Слишком короткое название. Введите марку и модель (например: Toyota Camry):")
         return
 
+    # Сохраняем в БД
+    user_data = await state.get_data()
+    order_id = user_data.get('order_id')
+    if order_id:
+        database.update_order_field(order_id, 'car_brand', brand)
+
     await state.update_data(engine_brand=brand)
     await message.answer(f"✅ Марка: {brand}\n\n📅 Введите год выпуска (например: 2015):")
     await state.set_state(EngineOrderForm.engine_year)
@@ -524,6 +625,12 @@ async def engine_year_handler(message: types.Message, state: FSMContext):
         await message.answer("❌ Введите реальный год выпуска (1900-2025).")
         return
 
+    # Сохраняем в БД
+    user_data = await state.get_data()
+    order_id = user_data.get('order_id')
+    if order_id:
+        database.update_order_field(order_id, 'car_year', year_text)
+
     await state.update_data(engine_year=year_text)
     await message.answer(f"✅ Год: {year_text}\n\n🔧 Опишите проблему своими словами:")
     await state.set_state(EngineOrderForm.engine_issue)
@@ -539,15 +646,13 @@ async def engine_issue_handler(message: types.Message, state: FSMContext):
         await message.answer("❌ Опишите подробнее (минимум 5 символов).")
         return
 
-    await state.update_data(engine_issue=issue)
-
+    # Сохраняем в БД
     user_data = await state.get_data()
     order_id = user_data.get('order_id')
-
     if order_id:
-        current_data = f"Марка: {user_data.get('engine_brand')}\nГод: {user_data.get('engine_year')}\nПроблема: {issue}"
-        database.update_order_field(order_id, 'comment', current_data)
+        database.update_order_field(order_id, 'engine_issue', issue)
 
+    await state.update_data(engine_issue=issue)
     await message.answer("✅ Проблема сохранена!\n\n⚡ Выберите срочность:", reply_markup=kb_urgency())
     await state.set_state(EngineOrderForm.engine_urgency)
 
@@ -576,50 +681,105 @@ async def engine_urgency_handler(callback: types.CallbackQuery, state: FSMContex
         database.update_order_field(order_id, 'urgency', urgency)
 
     await callback.message.edit_text(f"✅ Срочность: {urgency}")
+
+    # Создаем клавиатуру для финального шага двигателя
+    kb_engine_final = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="✅ Оформить заказ")],
+            [KeyboardButton(text="✍️ Добавить комментарий")]
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
+
     await callback.message.answer(
-        "💬 Есть ли дополнительные пожелания или комментарии?\n"
-        "(Если нет, напишите 'нет' или 'готово'):"
+        "🎯 *Почти готово!*\n\n"
+        "Хотите добавить комментарий к заказу? Например:\n"
+        "• Особые требования\n"
+        "• Пожелания по срокам\n"
+        "• Контакт для связи\n\n"
+        "Если всё ясно — просто нажмите кнопку '✅ Оформить заказ'",
+        parse_mode="Markdown",
+        reply_markup=kb_engine_final
     )
     await state.set_state(EngineOrderForm.engine_comment)
 
 @dp.message(EngineOrderForm.engine_comment)
 async def engine_comment_handler(message: types.Message, state: FSMContext):
-    """Обработка финального комментария"""
-    print(f"DEBUG: engine_comment_handler вызван с текстом: {message.text}")
-
-    comment = message.text.strip()
-
+    """Обработка финального шага для ремонта двигателя"""
+    txt = safe_text(message)
     user_data = await state.get_data()
     order_id = user_data.get('order_id')
 
-    if order_id:
-        order = database.get_order(order_id)
-        existing_comment = order['comment'] or ''
+    if not order_id:
+        await message.answer("❌ Ошибка: заказ не найден")
+        await state.clear()
+        return
 
-        if comment.lower() not in ['нет', 'готово', 'no', 'done', 'н', 'без комментариев']:
-            final_comment = f"{existing_comment}\n\nДополнительно: {comment}"
-            await state.update_data(engine_comment=comment)
-        else:
-            final_comment = existing_comment
-            await state.update_data(engine_comment='Нет комментариев')
+    order = database.get_order(order_id)
 
-        database.update_order_field(order_id, 'comment', final_comment)
-        database.finish_order_creation(order_id)
+    # Если нажали "✅ Оформить заказ"
+    if txt == "✅ Оформить заказ":
+        comment = order['comment'] or 'Нет дополнительных комментариев'
 
-        # Отправляем уведомление админу
-        await notify_engine_admin(order_id, user_data)
-
+    # Если нажали "✍️ Добавить комментарий"
+    elif txt == "✍️ Добавить комментарий":
         await message.answer(
-            "🎉 <b>Заказ на ремонт двигателя успешно оформлен!</b>\n\n"
-            f"📋 <b>Номер заказа:</b> №{order_id}\n"
-            f"🚗 <b>Марка:</b> {user_data.get('engine_brand', 'Не указано')}\n"
-            f"📅 <b>Год:</b> {user_data.get('engine_year', 'Не указано')}\n"
-            f"🔧 <b>Проблема:</b> {user_data.get('engine_issue', 'Не указано')}\n"
-            f"⏳ <b>Срочность:</b> {user_data.get('engine_urgency', 'Не указано')}\n\n"
-            "Наш специалист свяжется с вами в ближайшее время.",
-            reply_markup=kb_main_menu(),
-            parse_mode="HTML"
+            "✍️ Напишите ваш комментарий к заказу:\n\n"
+            "(Можете написать любые пожелания, вопросы или оставить пустым)",
+            parse_mode="Markdown",
+            reply_markup=types.ReplyKeyboardRemove()
         )
+        # Меняем состояние на ожидание комментария двигателя
+        await state.set_state(CommentForm.waiting_engine_comment)
+        return
+
+    else:
+        # Это пользовательский комментарий (если сразу написали текст)
+        comment = txt
+        await finish_engine_order(order_id, comment, user_data, message, state)
+        return
+
+    # Если нажали "✅ Оформить заказ"
+    await finish_engine_order(order_id, comment, user_data, message, state)
+
+@dp.message(CommentForm.waiting_engine_comment)
+async def process_engine_user_comment(message: types.Message, state: FSMContext):
+    """Обработка пользовательского комментария для двигателя"""
+    user_data = await state.get_data()
+    txt = safe_text(message)
+    order_id = user_data.get('order_id')
+
+    if not order_id:
+        await message.answer("❌ Ошибка: заказ не найден")
+        await state.clear()
+        return
+
+    await finish_engine_order(order_id, txt, user_data, message, state)
+
+async def finish_engine_order(order_id: int, comment: str, user_data: dict, message: types.Message, state: FSMContext):
+    """Завершение оформления заказа на ремонт двигателя"""
+    # Обновляем комментарий в БД
+    existing_comment = user_data.get('engine_issue', '')
+    final_comment = f"{existing_comment}\n\nКомментарий: {comment}" if comment else existing_comment
+
+    database.update_order_field(order_id, 'comment', final_comment)
+    database.finish_order_creation(order_id)
+
+    # Отправляем уведомление админу
+    await notify_engine_admin(order_id, user_data)
+
+    await message.answer(
+        "🎉 <b>Заказ на ремонт двигателя успешно оформлен!</b>\n\n"
+        f"📋 <b>Номер заказа:</b> №{order_id}\n"
+        f"🚗 <b>Марка:</b> {user_data.get('engine_brand', 'Не указано')}\n"
+        f"📅 <b>Год:</b> {user_data.get('engine_year', 'Не указано')}\n"
+        f"🔧 <b>Проблема:</b> {user_data.get('engine_issue', 'Не указано')}\n"
+        f"⏳ <b>Срочность:</b> {user_data.get('engine_urgency', 'Не указано')}\n\n"
+        "Наш специалист свяжется с вами в ближайшее время.",
+        reply_markup=kb_main_menu(),
+        parse_mode="HTML"
+    )
 
     await state.clear()
 
@@ -631,6 +791,12 @@ async def notify_engine_admin(order_id: int, user_data: dict):
         return
 
     order = database.get_order(order_id)
+
+    # Создаем кнопку "Ответить" под сообщением
+    reply_markup = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💬 Ответить клиенту", callback_data=f"reply_{order_id}")]
+    ])
+
     text = (f"🔔 <b>НОВЫЙ ЗАКАЗ №{order['id']}</b>\n"
             f"Тип: Ремонт двигателя\n"
             f"👤: {order['full_name']} (@{order['username']})\n"
@@ -638,13 +804,104 @@ async def notify_engine_admin(order_id: int, user_data: dict):
             f"📅 Год: {user_data.get('engine_year', 'Не указано')}\n"
             f"🔧 Проблема: {user_data.get('engine_issue', 'Не указано')}\n"
             f"⏳ Срочность: {user_data.get('engine_urgency', 'Не указано')}\n"
-            f"📝 Комментарий: {order['comment']}\n\n"
-            f"<i>Reply для ответа.</i>")
+            f"📝 Комментарий: {order['comment'] or 'Нет комментариев'}")
 
     try:
-        await bot.send_message(aid, text, parse_mode="HTML")
+        await bot.send_message(
+            aid,
+            text,
+            parse_mode="HTML",
+            reply_markup=reply_markup
+        )
     except Exception as e:
         logging.error(f"Ошибка отправки админу (двигатель): {e}")
+
+# обработчик ответа клиенту
+@dp.callback_query(F.data.startswith("reply_"))
+async def reply_to_order_handler(callback: types.CallbackQuery, state: FSMContext):
+    """Обработка нажатия на кнопку 'Ответить клиенту'"""
+    try:
+        # Извлекаем ID заказа из callback_data
+        order_id = int(callback.data.split("_")[1])
+        order = database.get_order(order_id)
+
+        if not order:
+            await callback.answer("❌ Заказ не найден")
+            return
+
+        # Проверяем, что это админ
+        cfg = database.get_bot_config()
+        admin_chat_id = cfg.get("admin_chat_id", "0")
+
+        if str(callback.message.chat.id) != admin_chat_id:
+            await callback.answer("❌ Нет доступа")
+            return
+
+        # Сохраняем данные для ответа
+        await state.set_state(AdminReplyForm.waiting_for_reply)
+        await state.update_data(
+            reply_order_id=order_id,
+            reply_user_id=order['user_id'],
+            reply_message_id=callback.message.message_id
+        )
+
+        # Спрашиваем текст ответа
+        await callback.message.answer(
+            f"✍️ <b>Отправьте ответ клиенту по заказу №{order_id}:</b>\n\n"
+            f"Клиент: {order['full_name']} (@{order['username']})\n\n"
+            f"Напишите сообщение для клиента:",
+            parse_mode="HTML"
+        )
+
+        await callback.answer()
+
+    except Exception as e:
+        logging.error(f"Ошибка обработки reply: {e}")
+        await callback.answer("❌ Ошибка")
+
+@dp.message(AdminReplyForm.waiting_for_reply)
+async def process_admin_reply(message: types.Message, state: FSMContext):
+    """Обработка текста ответа от админа"""
+    data = await state.get_data()
+    order_id = data.get('reply_order_id')
+    user_id = data.get('reply_user_id')
+
+    if not order_id or not user_id:
+        await message.answer("❌ Ошибка: данные ответа потеряны")
+        await state.clear()
+        return
+
+    try:
+        # Отправляем сообщение клиенту
+        await bot.send_message(
+            user_id,
+            f"👨‍🔧 <b>Ответ от мастера по заказу №{order_id}:</b>\n\n{message.text}",
+            parse_mode="HTML"
+        )
+
+        # Подтверждаем админу
+        await message.answer(f"✅ Ответ отправлен клиенту (заказ №{order_id})")
+
+        # Меняем статус заказа на "discussion"
+        database.update_order_field(order_id, 'status', 'discussion')
+
+        # Удаляем кнопку "Ответить" из оригинального сообщения
+        try:
+            reply_message_id = data.get('reply_message_id')
+            if reply_message_id:
+                # Просто удаляем кнопку или добавляем текст об ответе
+                await bot.edit_message_reply_markup(
+                    chat_id=message.chat.id,
+                    message_id=reply_message_id,
+                    reply_markup=None  # Удаляем кнопку
+                )
+        except Exception as e:
+            logging.error(f"Не удалось обновить сообщение: {e}")
+
+    except Exception as e:
+        await message.answer(f"❌ Ошибка отправки: {e}")
+
+    await state.clear()
 
 # --- Запуск бота ---
 async def main():

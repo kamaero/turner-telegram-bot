@@ -154,7 +154,8 @@ function build_query($type = 'all', $search = '', $month = null, $year = null) {
     elseif ($type === 'machining') $where[] = "order_type IN ('standard', 'machining')";
     if ($search) {
         $safe_search = $mysqli->real_escape_string($search);
-        $where[] = "(full_name LIKE '%$safe_search%' OR username LIKE '%$safe_search%' OR comment LIKE '%$safe_search%')";
+        $where[] = "(full_name LIKE '%$safe_search%' OR username LIKE '%$safe_search%' OR comment LIKE '%$safe_search%'
+                     OR car_brand LIKE '%$safe_search%' OR engine_issue LIKE '%$safe_search%')";
     }
     if ($month && $year) {
         $where[] = "MONTH(created_at) = $month AND YEAR(created_at) = $year";
@@ -274,7 +275,16 @@ function render_switch($key, $label) {
                                 <td><span class="badge bg-primary"><?= $row['order_type'] === 'engine_repair' ? '🔧 Двигатель' : '⚙️ Станок' ?></span></td>
                                 <td><span class="badge <?= $status_map[$row['status']]['class'] ?>"><?= $status_map[$row['status']]['text'] ?></span></td>
                                 <td><b><?= htmlspecialchars($row['full_name'], ENT_QUOTES, 'UTF-8') ?></b><br>@<?= htmlspecialchars($row['username'] ?? '-', ENT_QUOTES, 'UTF-8') ?></td>
-                                <td><?= htmlspecialchars(mb_strimwidth($row['work_type'] ?? $row['comment'] ?? '', 0, 60, '...'), ENT_QUOTES, 'UTF-8') ?></td>
+                                <td>
+                                    <?php
+                                    if ($row['order_type'] === 'engine_repair') {
+                                        $car_info = ($row['car_brand'] ?? '') . ' ' . ($row['car_year'] ?? '');
+                                        echo htmlspecialchars(mb_strimwidth($car_info, 0, 60, '...'), ENT_QUOTES, 'UTF-8');
+                                    } else {
+                                        echo htmlspecialchars(mb_strimwidth($row['work_type'] ?? $row['comment'] ?? '', 0, 60, '...'), ENT_QUOTES, 'UTF-8');
+                                    }
+                                    ?>
+                                </td>
                                 <td class="text-end"><button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#orderModal" data-id="<?= $row['id'] ?>" data-json='<?= json_encode($row, JSON_UNESCAPED_UNICODE) ?>'>👁</button></td>
                             </tr>
                         <?php endwhile; endif; ?>
@@ -286,20 +296,66 @@ function render_switch($key, $label) {
         <!-- Ремонт двигателей -->
         <div class="tab-pane fade" id="engines">
             <h5>🔧 Заказы: Ремонт двигателей</h5>
+            <div class="filter-bar d-flex align-items-center gap-2 shadow-sm mb-3">
+                <input type="text" id="engine-search" class="form-control form-control-sm" placeholder="Поиск по марке или проблеме..." style="width:300px;">
+                <button type="button" class="btn btn-sm btn-outline-primary" onclick="filterEngineTable()">🔍 Поиск</button>
+            </div>
             <div class="table-responsive mt-3">
-                <table class="table table-striped">
+                <table class="table table-striped" id="engine-table">
                     <thead>
-                        <tr><th>ID</th><th>Клиент</th><th>Автомобиль</th><th>Проблема</th><th>Срочность</th><th>Статус</th></tr>
+                        <tr>
+                            <th>ID</th>
+                            <th>Клиент</th>
+                            <th>Автомобиль</th>
+                            <th>Проблема</th>
+                            <th>Срочность</th>
+                            <th>Статус</th>
+                            <th>Действия</th>
+                        </tr>
                     </thead>
                     <tbody>
-                        <?php while ($e = $engines->fetch_assoc()): ?>
-                            <tr>
+                        <?php
+                        $engines->data_seek(0);
+                        while ($e = $engines->fetch_assoc()):
+                            $car_brand = htmlspecialchars($e['car_brand'] ?? 'Не указано', ENT_QUOTES, 'UTF-8');
+                            $car_year = htmlspecialchars($e['car_year'] ?? 'Не указано', ENT_QUOTES, 'UTF-8');
+                            $engine_issue = htmlspecialchars($e['engine_issue'] ?? ($e['comment'] ?? 'Не указано'), ENT_QUOTES, 'UTF-8');
+                        ?>
+                            <tr class="engine-row" data-brand="<?= $car_brand ?>" data-issue="<?= $engine_issue ?>">
                                 <td>#<?= $e['id'] ?></td>
-                                <td><?= htmlspecialchars($e['full_name']) ?></td>
-                                <td><?= htmlspecialchars($e['dimensions_info']) ?></td>
-                                <td><?= htmlspecialchars($e['comment']) ?></td>
-                                <td><?= htmlspecialchars($e['urgency']) ?></td>
-                                <td><span class="badge <?= $status_map[$e['status']]['class'] ?>"><?= $status_map[$e['status']]['text'] ?></span></td>
+                                <td>
+                                    <strong><?= htmlspecialchars($e['full_name'] ?? '', ENT_QUOTES, 'UTF-8') ?></strong><br>
+                                    <small class="text-muted">@<?= htmlspecialchars($e['username'] ?? '—', ENT_QUOTES, 'UTF-8') ?></small>
+                                </td>
+                                <td>
+                                    <strong>Марка:</strong> <?= $car_brand ?><br>
+                                    <strong>Год:</strong> <?= $car_year ?>
+                                </td>
+                                <td><?= $engine_issue ?></td>
+                                <td>
+                                    <?php
+                                    $urgency = $e['urgency'] ?? '';
+                                    $urgency_class = 'bg-secondary';
+                                    if ($urgency === 'Высокая') $urgency_class = 'bg-danger';
+                                    elseif ($urgency === 'Средняя') $urgency_class = 'bg-warning text-dark';
+                                    elseif ($urgency === 'Низкая') $urgency_class = 'bg-success';
+                                    ?>
+                                    <span class="badge <?= $urgency_class ?>"><?= htmlspecialchars($urgency, ENT_QUOTES, 'UTF-8') ?></span>
+                                </td>
+                                <td>
+                                    <span class="badge <?= $status_map[$e['status']]['class'] ?>">
+                                        <?= $status_map[$e['status']]['text'] ?>
+                                    </span>
+                                </td>
+                                <td>
+                                    <button class="btn btn-sm btn-outline-secondary"
+                                            data-bs-toggle="modal"
+                                            data-bs-target="#orderModal"
+                                            data-id="<?= $e['id'] ?>"
+                                            data-json='<?= json_encode($e, JSON_UNESCAPED_UNICODE) ?>'>
+                                        👁 Просмотр
+                                    </button>
+                                </td>
                             </tr>
                         <?php endwhile; ?>
                     </tbody>
@@ -392,6 +448,29 @@ function updateFilters() {
     window.location.href = 'admin.php?' + params.toString();
 }
 
+function filterEngineTable() {
+    const searchText = document.getElementById('engine-search').value.toLowerCase();
+    const rows = document.querySelectorAll('#engine-table .engine-row');
+
+    rows.forEach(row => {
+        const brand = row.getAttribute('data-brand').toLowerCase();
+        const issue = row.getAttribute('data-issue').toLowerCase();
+
+        if (brand.includes(searchText) || issue.includes(searchText)) {
+            row.style.display = '';
+        } else {
+            row.style.display = 'none';
+        }
+    });
+}
+
+// Добавьте обработчик нажатия Enter в поле поиска
+document.getElementById('engine-search').addEventListener('keypress', function(e) {
+    if (e.key === 'Enter') {
+        filterEngineTable();
+    }
+});
+
 const modal = document.getElementById('orderModal');
 modal.addEventListener('show.bs.modal', function (event) {
     const button = event.relatedTarget;
@@ -400,7 +479,20 @@ modal.addEventListener('show.bs.modal', function (event) {
     document.getElementById('input_id').value = data.id;
     document.getElementById('m_client').innerText = data.full_name + ' (@' + (data.username || '-') + ')';
     document.getElementById('m_type').innerText = data.order_type === 'engine_repair' ? '🔧 Ремонт двигателя' : (data.work_type || '–');
-    document.getElementById('m_car').innerText = data.order_type === 'engine_repair' ? data.dimensions_info : '–';
+
+    if (data.order_type === 'engine_repair') {
+        let html = '';
+        if (data.car_brand) html += '<strong>Марка:</strong> ' + data.car_brand + '<br>';
+        if (data.car_year) html += '<strong>Год:</strong> ' + data.car_year + '<br>';
+        if (data.engine_issue) html += '<strong>Проблема:</strong> ' + data.engine_issue;
+        document.getElementById('m_car').innerHTML = html || '–';
+    } else {
+        let html = '';
+        if (data.dimensions_info) html += '<strong>Размеры:</strong> ' + data.dimensions_info + '<br>';
+        if (data.conditions) html += '<strong>Условия:</strong> ' + data.conditions;
+        document.getElementById('m_car').innerHTML = html || '–';
+    }
+
     document.getElementById('m_urgency').innerText = data.urgency || '–';
     document.getElementById('m_comment').innerText = data.comment || '–';
     document.getElementById('m_note').value = data.internal_note || '';

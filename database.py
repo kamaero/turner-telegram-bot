@@ -3,7 +3,8 @@ import config
 
 ALLOWED_FIELDS = {
     'photo_file_id', 'work_type', 'dimensions_info', 'conditions',
-    'urgency', 'comment', 'status', 'order_type'
+    'urgency', 'comment', 'status', 'order_type',
+    'car_brand', 'car_year', 'engine_issue'  # ДОБАВЛЕНО
 }
 
 def get_connection():
