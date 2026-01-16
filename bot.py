@@ -299,8 +299,10 @@ async def process_comment(message: types.Message, state: FSMContext):
     # Если нажали "✅ Оформить заказ"
     if txt == "✅ Оформить заказ":
         final_comm = data.get('temp_comment', '') + "Нет дополнительных комментариев"
+        await finish_order(order_id, final_comm, message, state)
+        return
 
-    # Если нажали "✍️ Добавить комментарий" или написали текст
+    # Если нажали "✍️ Добавить комментарий"
     elif txt == "✍️ Добавить комментарий":
         await message.answer(
             "✍️ Напишите ваш комментарий к заказу:\n\n"
@@ -313,13 +315,10 @@ async def process_comment(message: types.Message, state: FSMContext):
         return
 
     else:
-        # Это пользовательский комментарий
+        # Это пользовательский комментарий (если сразу написали текст вместо кнопки)
         final_comm = data.get('temp_comment', '') + txt
         await finish_order(order_id, final_comm, message, state)
         return
-
-    # Если нажали "✅ Оформить заказ"
-    await finish_order(order_id, final_comm, message, state)
 
 @dp.message(CommentForm.waiting_comment)
 async def process_user_comment(message: types.Message, state: FSMContext):
@@ -716,11 +715,11 @@ async def engine_comment_handler(message: types.Message, state: FSMContext):
         await state.clear()
         return
 
-    order = database.get_order(order_id)
-
     # Если нажали "✅ Оформить заказ"
     if txt == "✅ Оформить заказ":
-        comment = order['comment'] or 'Нет дополнительных комментариев'
+        comment = "Нет дополнительных комментариев"
+        await finish_engine_order(order_id, comment, user_data, message, state)
+        return
 
     # Если нажали "✍️ Добавить комментарий"
     elif txt == "✍️ Добавить комментарий":
@@ -739,9 +738,6 @@ async def engine_comment_handler(message: types.Message, state: FSMContext):
         comment = txt
         await finish_engine_order(order_id, comment, user_data, message, state)
         return
-
-    # Если нажали "✅ Оформить заказ"
-    await finish_engine_order(order_id, comment, user_data, message, state)
 
 @dp.message(CommentForm.waiting_engine_comment)
 async def process_engine_user_comment(message: types.Message, state: FSMContext):
