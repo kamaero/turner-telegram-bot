@@ -141,6 +141,40 @@ if (isset($_POST['update_order'])) {
     $msg = "✅ Заказ #$oid обновлён!";
 }
 
+// --- Функция извлечения телефона из комментария ---
+function extract_phone_from_comment($comment) {
+    if (empty($comment)) return '';
+
+    // Ищем телефонные номера в различных форматах
+    $patterns = [
+        '/(?:\+7|7|8)?[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}/', // Российские номера
+        '/(?:\+?\d{1,3}[\s\-]?)?\(?\d{1,4}\)?[\s\-]?\d{1,4}[\s\-]?\d{1,4}[\s\-]?\d{1,4}/', // Международные
+    ];
+
+    foreach ($patterns as $pattern) {
+        if (preg_match($pattern, $comment, $matches)) {
+            $phone = preg_replace('/[^\d\+]/', '', $matches[0]);
+
+            // Форматируем российский номер
+            if (preg_match('/^(\+?7|8)(\d{3})(\d{3})(\d{2})(\d{2})$/', $phone, $matches_ru)) {
+                return '+7 (' . $matches_ru[2] . ') ' . $matches_ru[3] . '-' . $matches_ru[4] . '-' . $matches_ru[5];
+            }
+
+            return $phone;
+        }
+    }
+
+    // Если не нашли форматированный номер, ищем слова "тел", "телефон", "номер"
+    if (preg_match('/(?:тел[\.]?|телефон|номер)[\s:]*([\+\d\s\-\(\)]{7,})/iu', $comment, $matches)) {
+        $phone = preg_replace('/[^\d\+]/', '', $matches[1]);
+        if (strlen($phone) >= 7) {
+            return $phone;
+        }
+    }
+
+    return '';
+}
+
 // --- Поиск и фильтрация ---
 $search = $_GET['search'] ?? '';
 $selected_month = (int)($_GET['m'] ?? date('n'));
@@ -222,6 +256,12 @@ function render_switch($key, $label) {
         .filter-bar { background: #e9ecef; padding: 10px; border-radius: 8px; margin-bottom: 20px; }
         .stat-card { text-align: center; }
         .badge { padding: 0.5em 0.8em; font-size: 0.85em; }
+        .camera-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }
+        .camera-card { background: #1a1a1a; border-radius: 8px; overflow: hidden; }
+        .camera-header { background: #333; color: white; padding: 10px; font-weight: bold; }
+        .camera-feed { width: 100%; height: 200px; object-fit: cover; background: #000; }
+        .phone-link { color: #198754; text-decoration: none; }
+        .phone-link:hover { color: #0d6efd; text-decoration: underline; }
     </style>
 </head>
 <body class="bg-light pb-5">
@@ -238,6 +278,7 @@ function render_switch($key, $label) {
     <ul class="nav nav-pills mb-4" id="pills-tab" role="tablist">
         <li class="nav-item"><button class="nav-link active" data-bs-toggle="pill" data-bs-target="#orders">📋 Все заказы</button></li>
         <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#engines">🔧 Ремонт двигателей</button></li>
+        <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#cameras">📹 Камеры</button></li>
         <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#stats">📊 Статистика</button></li>
         <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#settings">⚙️ Конструктор</button></li>
     </ul>
@@ -263,18 +304,29 @@ function render_switch($key, $label) {
             <div class="table-responsive bg-white shadow rounded p-3">
                 <table class="table table-hover align-middle">
                     <thead class="table-light">
-                        <tr><th>ID</th><th>Дата</th><th>Тип</th><th>Статус</th><th>Клиент</th><th>Детали</th><th></th></tr>
+                        <tr><th>ID</th><th>Дата</th><th>Тип</th><th>Статус</th><th>Клиент</th><th>Контакт</th><th>Детали</th><th></th></tr>
                     </thead>
                     <tbody>
                         <?php if ($orders->num_rows == 0): ?>
-                            <tr><td colspan="7" class="text-center text-muted">📭 Нет заказов</td></tr>
-                        <?php else: while ($row = $orders->fetch_assoc()): ?>
+                            <tr><td colspan="8" class="text-center text-muted">📭 Нет заказов</td></tr>
+                        <?php else: while ($row = $orders->fetch_assoc()):
+                            $phone = extract_phone_from_comment($row['comment'] ?? '');
+                        ?>
                             <tr class="order-row">
                                 <td>#<?= $row['id'] ?></td>
                                 <td><small><?= date('d.m H:i', strtotime($row['created_at'])) ?></small></td>
                                 <td><span class="badge bg-primary"><?= $row['order_type'] === 'engine_repair' ? '🔧 Двигатель' : '⚙️ Станок' ?></span></td>
                                 <td><span class="badge <?= $status_map[$row['status']]['class'] ?>"><?= $status_map[$row['status']]['text'] ?></span></td>
                                 <td><b><?= htmlspecialchars($row['full_name'], ENT_QUOTES, 'UTF-8') ?></b><br>@<?= htmlspecialchars($row['username'] ?? '-', ENT_QUOTES, 'UTF-8') ?></td>
+                                <td>
+                                    <?php if (!empty($phone)): ?>
+                                        <a href="tel:<?= htmlspecialchars($phone, ENT_QUOTES, 'UTF-8') ?>" class="phone-link">
+                                            📞 <?= htmlspecialchars($phone, ENT_QUOTES, 'UTF-8') ?>
+                                        </a>
+                                    <?php else: ?>
+                                        <span class="text-muted">–</span>
+                                    <?php endif; ?>
+                                </td>
                                 <td>
                                     <?php
                                     if ($row['order_type'] === 'engine_repair') {
@@ -306,6 +358,7 @@ function render_switch($key, $label) {
                         <tr>
                             <th>ID</th>
                             <th>Клиент</th>
+                            <th>Контакт</th>
                             <th>Автомобиль</th>
                             <th>Проблема</th>
                             <th>Срочность</th>
@@ -320,12 +373,22 @@ function render_switch($key, $label) {
                             $car_brand = htmlspecialchars($e['car_brand'] ?? 'Не указано', ENT_QUOTES, 'UTF-8');
                             $car_year = htmlspecialchars($e['car_year'] ?? 'Не указано', ENT_QUOTES, 'UTF-8');
                             $engine_issue = htmlspecialchars($e['engine_issue'] ?? ($e['comment'] ?? 'Не указано'), ENT_QUOTES, 'UTF-8');
+                            $phone = extract_phone_from_comment($e['comment'] ?? '');
                         ?>
                             <tr class="engine-row" data-brand="<?= $car_brand ?>" data-issue="<?= $engine_issue ?>">
                                 <td>#<?= $e['id'] ?></td>
                                 <td>
                                     <strong><?= htmlspecialchars($e['full_name'] ?? '', ENT_QUOTES, 'UTF-8') ?></strong><br>
                                     <small class="text-muted">@<?= htmlspecialchars($e['username'] ?? '—', ENT_QUOTES, 'UTF-8') ?></small>
+                                </td>
+                                <td>
+                                    <?php if (!empty($phone)): ?>
+                                        <a href="tel:<?= htmlspecialchars($phone, ENT_QUOTES, 'UTF-8') ?>" class="phone-link">
+                                            📞 <?= htmlspecialchars($phone, ENT_QUOTES, 'UTF-8') ?>
+                                        </a>
+                                    <?php else: ?>
+                                        <span class="text-muted">–</span>
+                                    <?php endif; ?>
                                 </td>
                                 <td>
                                     <strong>Марка:</strong> <?= $car_brand ?><br>
@@ -363,6 +426,111 @@ function render_switch($key, $label) {
             </div>
         </div>
 
+        <!-- Камеры наблюдения -->
+        <div class="tab-pane fade" id="cameras">
+            <h5>📹 Видеонаблюдение</h5>
+            <div class="alert alert-info mb-3">
+                <strong>ℹ️ Информация:</strong> Подключите IP-камеры через RTSP или MJPEG потоки.
+                Обновите настройки в конфигурации для добавления камер.
+            </div>
+
+            <div class="camera-grid">
+                <!-- Камера 1 -->
+                <div class="camera-card shadow">
+                    <div class="camera-header">
+                        📹 Главный цех
+                    </div>
+                    <img src="<?= htmlspecialchars($cfg['camera_url_1'] ?? 'https://via.placeholder.com/300x200/1a1a1a/ffffff?text=Камера+1+не+настроена', ENT_QUOTES, 'UTF-8') ?>"
+                         class="camera-feed"
+                         alt="Камера 1"
+                         onerror="this.src='https://via.placeholder.com/300x200/ff0000/ffffff?text=Ошибка+загрузки'">
+                    <div class="p-2 text-white small">
+                        <div class="d-flex justify-content-between">
+                            <span><?= htmlspecialchars($cfg['camera_name_1'] ?? 'Камера не настроена', ENT_QUOTES, 'UTF-8') ?></span>
+                            <span class="badge bg-success">● ONLINE</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Камера 2 -->
+                <div class="camera-card shadow">
+                    <div class="camera-header">
+                        📹 Склад запчастей
+                    </div>
+                    <img src="<?= htmlspecialchars($cfg['camera_url_2'] ?? 'https://via.placeholder.com/300x200/1a1a1a/ffffff?text=Камера+2+не+настроена', ENT_QUOTES, 'UTF-8') ?>"
+                         class="camera-feed"
+                         alt="Камера 2"
+                         onerror="this.src='https://via.placeholder.com/300x200/ff0000/ffffff?text=Ошибка+загрузки'">
+                    <div class="p-2 text-white small">
+                        <div class="d-flex justify-content-between">
+                            <span><?= htmlspecialchars($cfg['camera_name_2'] ?? 'Камера не настроена', ENT_QUOTES, 'UTF-8') ?></span>
+                            <span class="badge bg-success">● ONLINE</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Камера 3 -->
+                <div class="camera-card shadow">
+                    <div class="camera-header">
+                        📹 Входная группа
+                    </div>
+                    <img src="<?= htmlspecialchars($cfg['camera_url_3'] ?? 'https://via.placeholder.com/300x200/1a1a1a/ffffff?text=Камера+3+не+настроена', ENT_QUOTES, 'UTF-8') ?>"
+                         class="camera-feed"
+                         alt="Камера 3"
+                         onerror="this.src='https://via.placeholder.com/300x200/ff0000/ffffff?text=Ошибка+загрузки'">
+                    <div class="p-2 text-white small">
+                        <div class="d-flex justify-content-between">
+                            <span><?= htmlspecialchars($cfg['camera_name_3'] ?? 'Камера не настроена', ENT_QUOTES, 'UTF-8') ?></span>
+                            <span class="badge bg-success">● ONLINE</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Камера 4 -->
+                <div class="camera-card shadow">
+                    <div class="camera-header">
+                        📹 Зона погрузки
+                    </div>
+                    <img src="<?= htmlspecialchars($cfg['camera_url_4'] ?? 'https://via.placeholder.com/300x200/1a1a1a/ffffff?text=Камера+4+не+настроена', ENT_QUOTES, 'UTF-8') ?>"
+                         class="camera-feed"
+                         alt="Камера 4"
+                         onerror="this.src='https://via.placeholder.com/300x200/ff0000/ffffff?text=Ошибка+загрузки'">
+                    <div class="p-2 text-white small">
+                        <div class="d-flex justify-content-between">
+                            <span><?= htmlspecialchars($cfg['camera_name_4'] ?? 'Камера не настроена', ENT_QUOTES, 'UTF-8') ?></span>
+                            <span class="badge bg-success">● ONLINE</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="mt-4 p-3 bg-white rounded shadow">
+                <h6>⚙️ Настройка камер</h6>
+                <form method="POST" class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label">Название камеры 1</label>
+                        <input type="text" name="cfg[camera_name_1]" class="form-control" value="<?= htmlspecialchars($cfg['camera_name_1'] ?? '', ENT_QUOTES, 'UTF-8') ?>" placeholder="Например: Главный цех">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">URL потока 1</label>
+                        <input type="text" name="cfg[camera_url_1]" class="form-control" value="<?= htmlspecialchars($cfg['camera_url_1'] ?? '', ENT_QUOTES, 'UTF-8') ?>" placeholder="http://ip-address/video">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Название камеры 2</label>
+                        <input type="text" name="cfg[camera_name_2]" class="form-control" value="<?= htmlspecialchars($cfg['camera_name_2'] ?? '', ENT_QUOTES, 'UTF-8') ?>" placeholder="Например: Склад запчастей">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">URL потока 2</label>
+                        <input type="text" name="cfg[camera_url_2]" class="form-control" value="<?= htmlspecialchars($cfg['camera_url_2'] ?? '', ENT_QUOTES, 'UTF-8') ?>" placeholder="http://ip-address/video">
+                    </div>
+                    <div class="col-12">
+                        <button type="submit" name="save_config" class="btn btn-primary">💾 Сохранить настройки камер</button>
+                        <button type="button" onclick="refreshCameraFeeds()" class="btn btn-secondary">🔄 Обновить потоки</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
         <!-- Статистика -->
         <div class="tab-pane fade" id="stats">
             <h5>📊 Статистика заказов</h5>
@@ -397,6 +565,7 @@ function render_switch($key, $label) {
                 <div class="row">
                     <div class="col-md-6">
                         <p><strong>👤</strong> <span id="m_client"></span></p>
+                        <p><strong>📞 Контакт:</strong> <span id="m_phone"></span></p>
                         <p><strong>🔧 Тип:</strong> <span id="m_type"></span></p>
                         <p><strong>🚗 Авто:</strong> <span id="m_car"></span></p>
                     </div>
@@ -464,6 +633,17 @@ function filterEngineTable() {
     });
 }
 
+function refreshCameraFeeds() {
+    const feeds = document.querySelectorAll('.camera-feed');
+    feeds.forEach(feed => {
+        const currentSrc = feed.src;
+        feed.src = currentSrc.split('?')[0] + '?t=' + new Date().getTime();
+    });
+}
+
+// Автообновление камер каждые 30 секунд
+setInterval(refreshCameraFeeds, 30000);
+
 // Добавьте обработчик нажатия Enter в поле поиска
 document.getElementById('engine-search').addEventListener('keypress', function(e) {
     if (e.key === 'Enter') {
@@ -479,6 +659,24 @@ modal.addEventListener('show.bs.modal', function (event) {
     document.getElementById('input_id').value = data.id;
     document.getElementById('m_client').innerText = data.full_name + ' (@' + (data.username || '-') + ')';
     document.getElementById('m_type').innerText = data.order_type === 'engine_repair' ? '🔧 Ремонт двигателя' : (data.work_type || '–');
+
+    // Извлекаем телефон из комментария для модального окна
+    const comment = data.comment || '';
+    let phone = '';
+    if (comment) {
+        // Простая регулярка для поиска телефона
+        const phoneMatch = comment.match(/(?:\+7|7|8)?[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}/);
+        if (phoneMatch) {
+            phone = phoneMatch[0].replace(/[^\d\+]/g, '');
+            // Форматируем
+            if (phone.match(/^(\+?7|8)(\d{3})(\d{3})(\d{2})(\d{2})$/)) {
+                phone = phone.replace(/^(\+?7|8)(\d{3})(\d{3})(\d{2})(\d{2})$/, '+7 ($2) $3-$4-$5');
+            }
+        }
+    }
+    document.getElementById('m_phone').innerHTML = phone ?
+        '<a href="tel:' + phone + '" class="phone-link">📞 ' + phone + '</a>' :
+        '<span class="text-muted">–</span>';
 
     if (data.order_type === 'engine_repair') {
         let html = '';
