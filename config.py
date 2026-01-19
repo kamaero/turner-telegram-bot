@@ -11,6 +11,3 @@ DB_NAME = os.getenv("DB_NAME")
 
 ADMIN_PANEL_PASSWORD = os.getenv("ADMIN_PANEL_PASSWORD")
 BOT_ADMIN_PASSWORD = os.getenv("BOT_ADMIN_PASSWORD")
-
-GOOGLE_SHEET_CREDENTIALS = "path/to/your/service_account.json"
-GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1XXXXX/edit"
