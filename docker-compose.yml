@@ -38,7 +38,7 @@ services:
       dockerfile: Dockerfile-web-admin
     restart: always
     ports:
-      - "${WEB_PORT:-8080}:80"
+      - "${WEB_PORT:-8081}:80"  # Изменен с 8080 на 8081
     volumes:
       - ./admin:/var/www/html
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql

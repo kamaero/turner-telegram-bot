@@ -54,12 +54,12 @@ fi
 echo "🛡️ Настройка файрвола..."
 if command -v ufw &> /dev/null; then
     sudo ufw allow ssh
-    sudo ufw allow 8080
+    sudo ufw allow 8081  # Порт админки изменен на 8081
     sudo ufw --force enable
     echo "✅ UFW настроен"
 elif command -v firewall-cmd &> /dev/null; then
     sudo firewall-cmd --permanent --add-service=ssh
-    sudo firewall-cmd --permanent --add-port=8080/tcp
+    sudo firewall-cmd --permanent --add-port=8081/tcp  # Порт админки изменен на 8081
     sudo firewall-cmd --reload
     echo "✅ Firewalld настроен"
 fi
@@ -76,8 +76,8 @@ if docker-compose ps | grep -q "Up"; then
     echo ""
     IP=$(curl -s ifconfig.me 2>/dev/null || curl -s ipinfo.io/ip 2>/dev/null || echo "localhost")
     echo "🌐 Доступные URL:"
-    echo "Админ-панель: http://$IP:8080/admin/"
-    echo "Тест токена:  http://$IP:8080/admin/test_token.php"
+    echo "Админ-панель: http://$IP:8081/admin/"
+    echo "Тест токена:  http://$IP:8081/admin/test_token.php"
     echo ""
     echo "📊 Полезные команды:"
     echo "docker-compose ps        # Статус"
