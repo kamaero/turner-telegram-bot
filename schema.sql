@@ -64,7 +64,8 @@ INSERT IGNORE INTO `bot_config` (`cfg_key`, `cfg_value`, `description`) VALUES
 ('admin_chat_id', '0', 'ID админа (заполнится само)'),
 ('msg_order_canceled', 'Заказ отменен.', 'Сообщение при отмене'),
 ('step_extra_enabled', '0', 'Включить дополнительный шаг'),
-('step_extra_text', 'Дополнительный вопрос', 'Текст доп. шага');
+('step_extra_text', 'Дополнительный вопрос', 'Текст доп. шага'),
+('bot_token', '', 'Токен Telegram бота');
 
 -- Если таблица orders уже существует без новых полей, добавляем их
 SET @dbname = DATABASE();

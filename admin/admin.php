@@ -35,14 +35,19 @@ if ($mysqli->connect_error) {
 $mysqli->set_charset("utf8mb4");
 
 // Получение токена
-$stmt = $mysqli->prepare("SELECT cfg_value FROM bot_config WHERE cfg_key = ?");
-$stmt->bind_param("s", $token_key);
-$token_key = "bot_token";
-$stmt->execute();
-$result = $stmt->get_result();
-$token_row = $result->fetch_assoc();
-$BOT_TOKEN = $token_row['cfg_value'] ?? '';
-$stmt->close();
+// Используем токен из php_config.php (переменные окружения) как основной источник
+$BOT_TOKEN = $bot_token;
+if (empty($BOT_TOKEN)) {
+    // Резервный источник: база данных
+    $stmt = $mysqli->prepare("SELECT cfg_value FROM bot_config WHERE cfg_key = ?");
+    $stmt->bind_param("s", $token_key);
+    $token_key = "bot_token";
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $token_row = $result->fetch_assoc();
+    $BOT_TOKEN = $token_row['cfg_value'] ?? '';
+    $stmt->close();
+}
 
 // --- Режим просмотра фото ---
 if (isset($_GET['view_photos'])) {
@@ -56,20 +61,42 @@ if (isset($_GET['view_photos'])) {
     echo '<!DOCTYPE html><html><head><title>Фото #'.$oid.'</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet"></head><body class="bg-dark text-white p-4">';
     echo '<div class="container"><h3>📸 Фото к заказу #'.$oid.'</h3><a href="admin.php" class="btn btn-outline-light btn-sm mb-3">← Назад</a><hr>';
 
-    if ($order && $order['photo_file_id']) {
+    if (!$BOT_TOKEN) {
+        echo '<div class="alert alert-danger"><strong>❌ Ошибка:</strong> Токен бота не настроен. Настройте токен в разделе "Конструктор".</div>';
+    } elseif ($order && $order['photo_file_id']) {
         $ids = array_filter(array_map('trim', explode(',', $order['photo_file_id'])));
         echo '<div class="row">';
+        $photo_count = 0;
+        $error_count = 0;
+        
         foreach ($ids as $file_id) {
             $context = stream_context_create(['http' => ['timeout' => 10]]);
             $json = @file_get_contents("https://api.telegram.org/bot$BOT_TOKEN/getFile?file_id=$file_id", false, $context);
-            if ($json === false) continue;
+            
+            if ($json === false) {
+                $error_count++;
+                echo '<div class="col-md-4 mb-4"><div class="card bg-danger"><div class="card-body text-center"><p class="mb-0">❌ Ошибка загрузки фото</p><small>File ID: ' . htmlspecialchars($file_id) . '</small></div></div></div>';
+                continue;
+            }
+            
             $data = json_decode($json, true);
             if (isset($data['result']['file_path'])) {
                 $url = "https://api.telegram.org/file/bot$BOT_TOKEN/" . $data['result']['file_path'];
-                echo '<div class="col-md-4 mb-4"><div class="card bg-secondary"><a href="'.$url.'" target="_blank"><img src="'.$url.'" class="card-img-top" style="height:300px;object-fit:contain;background:#222;"></a></div></div>';
+                echo '<div class="col-md-4 mb-4"><div class="card bg-secondary"><a href="'.$url.'" target="_blank"><img src="'.$url.'" class="card-img-top" style="height:300px;object-fit:contain;background:#222;" onerror="this.onerror=null;this.src=\'https://via.placeholder.com/300x200/ff0000/ffffff?text=Ошибка+загрузки\';"></a></div></div>';
+                $photo_count++;
+            } else {
+                $error_count++;
+                echo '<div class="col-md-4 mb-4"><div class="card bg-warning"><div class="card-body text-center"><p class="mb-0">⚠️ Файл не найден</p><small>File ID: ' . htmlspecialchars($file_id) . '</small></div></div></div>';
             }
         }
         echo '</div>';
+        
+        if ($photo_count > 0) {
+            echo '<div class="alert alert-success">Загружено фото: ' . $photo_count . '</div>';
+        }
+        if ($error_count > 0) {
+            echo '<div class="alert alert-warning">Ошибок загрузки: ' . $error_count . '</div>';
+        }
     } else {
         echo '<div class="alert alert-info">Фото не прикреплены.</div>';
     }
@@ -90,12 +117,28 @@ $status_map = [
 // --- Отправка сообщения клиенту ---
 function send_telegram_msg($user_id, $text) {
     global $BOT_TOKEN;
-    if (!$BOT_TOKEN || !$user_id) return;
+    if (!$BOT_TOKEN || !$user_id) {
+        error_log("Telegram send error: BOT_TOKEN or user_id is empty. BOT_TOKEN=" . ($BOT_TOKEN ? 'SET' : 'EMPTY') . ", user_id=$user_id");
+        return false;
+    }
     $url = "https://api.telegram.org/bot$BOT_TOKEN/sendMessage";
     $data = ['chat_id' => $user_id, 'text' => $text, 'parse_mode' => 'HTML'];
     $options = ['http' => ['header' => "Content-Type: application/x-www-form-urlencoded\r\n", 'method' => 'POST', 'content' => http_build_query($data), 'timeout' => 10, 'ignore_errors' => true]];
     $context = stream_context_create($options);
-    @file_get_contents($url, false, $context);
+    $response = @file_get_contents($url, false, $context);
+    
+    // Логируем результат для отладки
+    if ($response === false) {
+        error_log("Telegram API request failed for user $user_id");
+        return false;
+    } else {
+        $result = json_decode($response, true);
+        if (!$result['ok']) {
+            error_log("Telegram API error: " . ($result['description'] ?? 'Unknown error'));
+            return false;
+        }
+    }
+    return true;
 }
 
 // --- Сохранение настроек ---
@@ -136,9 +179,16 @@ if (isset($_POST['update_order'])) {
         } elseif ($new_status === 'rejected') {
             $client_msg .= "\n\n❌ Заказ отменён.";
         }
-        send_telegram_msg($order_info['user_id'], $client_msg);
+        
+        $sent = send_telegram_msg($order_info['user_id'], $client_msg);
+        if ($sent) {
+            $msg = "✅ Заказ #$oid обновлён! Клиент уведомлён.";
+        } else {
+            $msg = "⚠️ Заказ #$oid обновлён, но НЕ удалось отправить уведомление клиенту. Проверьте токен бота.";
+        }
+    } else {
+        $msg = "✅ Заказ #$oid обновлён!";
     }
-    $msg = "✅ Заказ #$oid обновлён!";
 }
 
 // --- Функция извлечения телефона из комментария ---
@@ -594,6 +644,10 @@ function render_switch($key, $label) {
         <!-- Конструктор -->
         <div class="tab-pane fade" id="settings">
             <form method="POST">
+                <div class="alert alert-warning mb-3">
+                    <strong>⚠️ Важно:</strong> Для отправки уведомлений клиентам необходимо указать токен Telegram бота.
+                </div>
+                <?php render_input('bot_token', 'Токен Telegram бота', 1); ?>
                 <?php render_input('welcome_msg', 'Приветствие'); ?>
                 <div class="sticky-bottom bg-white p-3 shadow-lg border-top">
                     <button type="submit" name="save_config" class="btn btn-success btn-lg">💾 Сохранить</button>
@@ -773,6 +827,12 @@ modal.addEventListener('show.bs.modal', function (event) {
         photoStatus.className = 'text-success fw-bold';
         photoContainer.classList.remove('d-none');
         photoLink.href = 'admin.php?view_photos=' + data.id;
+        
+        // Добавляем предупреждение о необходимости токена
+        const photoWarning = document.createElement('small');
+        photoWarning.className = 'text-warning d-block mt-1';
+        photoWarning.innerText = '⚠️ Для просмотра нужен токен бота';
+        photoStatus.appendChild(photoWarning);
     } else {
         photoStatus.innerText = 'Нет';
         photoStatus.className = 'text-muted';

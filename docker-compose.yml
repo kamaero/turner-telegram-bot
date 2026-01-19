@@ -23,7 +23,7 @@ services:
     environment:
       - BOT_TOKEN=${BOT_TOKEN}
       - BOT_ADMIN_PASSWORD=${BOT_ADMIN_PASSWORD:-botadmin123}
-      - DB_HOST=mysql_db
+      - DB_HOST=${DB_HOST:-mysql_db}
       - DB_USER=${DB_USER:-app_user}
       - DB_PASS=${DB_PASS:-app_password123}
       - DB_NAME=${DB_NAME:-turner_bot}
@@ -38,16 +38,17 @@ services:
       dockerfile: Dockerfile-web-admin
     restart: always
     ports:
-      - "8080:80"
+      - "${WEB_PORT:-8080}:80"
     volumes:
       - ./admin:/var/www/html
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
     environment:
-      - DB_HOST=mysql_db
+      - DB_HOST=${DB_HOST:-mysql_db}
       - DB_NAME=${DB_NAME:-turner_bot}
       - DB_USER=${DB_USER:-app_user}
       - DB_PASS=${DB_PASS:-app_password123}
       - ADMIN_PANEL_PASSWORD=${ADMIN_PANEL_PASSWORD:-admin123}
+      - BOT_TOKEN=${BOT_TOKEN}
     depends_on:
       mysql_db:
         condition: service_healthy
