@@ -38,3 +38,9 @@ logs/
 # Backup
 *.bak
 *.backup
+
+# Secrets - НЕ ЗАГРУЖАТЬ В GIT!
+config/service_account.json
+*.json
+!package.json
+!composer.json
