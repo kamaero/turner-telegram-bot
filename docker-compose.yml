@@ -41,7 +41,6 @@ services:
       - "${WEB_PORT:-8081}:80"  # Изменен с 8080 на 8081
     volumes:
       - ./admin:/var/www/html
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
     environment:
       - DB_HOST=${DB_HOST:-mysql_db}
       - DB_NAME=${DB_NAME:-turner_bot}

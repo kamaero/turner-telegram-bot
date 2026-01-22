@@ -73,13 +73,17 @@ setup_env() {
 # Генерация паролей
 generate_passwords() {
     if command -v php &> /dev/null; then
-        echo "🔐 Генерация безопасных паролей..."
-        php generate_passwords.php
-        echo ""
-        read -p "Хотите обновить пароли в .env? (y/N): " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            nano .env
+        if [ -f "generate_passwords.php" ]; then
+            echo "🔐 Генерация безопасных паролей..."
+            php generate_passwords.php
+            echo ""
+            read -p "Хотите обновить пароли в .env? (y/N): " -n 1 -r
+            echo
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                nano .env
+            fi
+        else
+            echo "⚠️  generate_passwords.php не найден. Пропускаем генерацию паролей."
         fi
     else
         echo "⚠️  PHP не установлен. Пропускаем генерацию паролей."
@@ -89,19 +93,21 @@ generate_passwords() {
 # Настройка файрвола
 setup_firewall() {
     echo "🛡️  Настройка файрвола..."
+
+    WEB_PORT_VALUE=${WEB_PORT:-8081}
     
     if command -v ufw &> /dev/null; then
         sudo ufw allow ssh
-        sudo ufw allow 8080
+        sudo ufw allow ${WEB_PORT_VALUE}
         sudo ufw --force enable
         echo "✅ UFW настроен"
     elif command -v firewall-cmd &> /dev/null; then
         sudo firewall-cmd --permanent --add-service=ssh
-        sudo firewall-cmd --permanent --add-port=8080/tcp
+        sudo firewall-cmd --permanent --add-port=${WEB_PORT_VALUE}/tcp
         sudo firewall-cmd --reload
         echo "✅ Firewalld настроен"
     else
-        echo "⚠️  Файрвол не найден. Настройте вручную порт 8080"
+        echo "⚠️  Файрвол не найден. Настройте вручную порт ${WEB_PORT_VALUE}"
     fi
 }
 
@@ -133,9 +139,10 @@ check_status() {
         
         echo ""
         echo "🌐 Доступные URL:"
+        WEB_PORT_VALUE=${WEB_PORT:-8081}
         IP=$(curl -s ifconfig.me 2>/dev/null || curl -s ipinfo.io/ip 2>/dev/null || echo "localhost")
-        echo "Админ-панель: http://$IP:8080/admin/"
-        echo "Тест токена:  http://$IP:8080/admin/test_token.php"
+        echo "Админ-панель: http://$IP:${WEB_PORT_VALUE}/admin/"
+        echo "Тест токена:  http://$IP:${WEB_PORT_VALUE}/admin/test_token.php"
         
         echo ""
         echo "📝 Полезные команды:"
