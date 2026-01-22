@@ -46,3 +46,5 @@ logs/
 
 # Deploy instructions with sensitive data
 deploy.md
+
+sync_config.jsonc
