@@ -27,6 +27,7 @@ Thumbs.db
 *.swp
 *.swo
 .gigaide/
+.zed/
 
 # Logs
 *.log
@@ -48,3 +49,6 @@ logs/
 deploy.md
 
 sync_config.jsonc
+
+# Test files
+test_db.py
