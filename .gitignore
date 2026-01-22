@@ -43,3 +43,6 @@ logs/
 *.json
 !package.json
 !composer.json
+
+# Deploy instructions with sensitive data
+deploy.md
