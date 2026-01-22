@@ -80,7 +80,7 @@ try:
     
     with conn.cursor() as cursor:
         # Проверяем существование таблиц
-        cursor.execute(\"SHOW TABLES LIKE 'users'\")
+        cursor.execute(\"SHOW TABLES LIKE 'orders'\")
         if not cursor.fetchone():
             print('Создаем таблицы из schema.sql...')
             with open('schema.sql', 'r', encoding='utf-8') as f:
