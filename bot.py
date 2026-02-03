@@ -6,6 +6,7 @@ GitHub: https://github.com/serg-akulov
 import asyncio
 import logging
 import re
+import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -38,6 +39,13 @@ class EngineOrderForm(StatesGroup):
     engine_issue = State()
     engine_urgency = State()
     engine_comment = State()
+
+class MachiningUnitForm(StatesGroup):
+    category = State()
+    brand = State()
+    year = State()
+    photo = State()
+    comment = State()
 
 # --- Машина состояний для ответов админа ---
 class AdminReplyForm(StatesGroup):
@@ -88,7 +96,8 @@ def kb_work_type():
     buttons = [
         [InlineKeyboardButton(text=get_text('btn_type_repair'), callback_data="type_repair")],
         [InlineKeyboardButton(text=get_text('btn_type_copy'), callback_data="type_copy")],
-        [InlineKeyboardButton(text=get_text('btn_type_drawing'), callback_data="type_drawing")]
+        [InlineKeyboardButton(text=get_text('btn_type_drawing'), callback_data="type_drawing")],
+        [InlineKeyboardButton(text="🔩 Ремонт узлов", callback_data="type_units")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -117,6 +126,17 @@ def kb_final_step():
     ]
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True, one_time_keyboard=True)
 
+def kb_unit_categories():
+    buttons = [
+        [InlineKeyboardButton(text="Головка блока цилиндров", callback_data="unit_hg")],
+        [InlineKeyboardButton(text="Коленвал", callback_data="unit_crank")],
+        [InlineKeyboardButton(text="Трансмиссия", callback_data="unit_trans")],
+        [InlineKeyboardButton(text="Турбокомпрессор", callback_data="unit_turbo")],
+        [InlineKeyboardButton(text="Топливная система", callback_data="unit_fuel")],
+        [InlineKeyboardButton(text="Редукторы", callback_data="unit_gear")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
 # --- Основные хендлеры ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
@@ -134,6 +154,28 @@ async def cmd_cancel(message: types.Message, state: FSMContext):
     await state.clear()
     database.cancel_old_filling_orders(message.from_user.id)
     await message.answer(get_text('msg_order_canceled'), reply_markup=kb_main_menu())
+
+@dp.message(Command("help"))
+async def cmd_help(message: types.Message):
+    text = (
+        "ℹ️ <b>Справка</b>\n\n"
+        "Основные команды:\n"
+        "• /start — начать оформление заказа\n"
+        "• /cancel — отменить текущий заказ\n"
+        "• /admin — панель администратора\n"
+        "• /orders — последние заказы (админ)\n"
+        "• /debugsettings — показывать текущие настройки\n"
+        "• /adminstatus — статус привязки админа\n"
+        "• /syncadmin — привязать chat_id к ник-админу\n"
+        "• /listadmins — список админов (суперадмин)\n"
+        "• /addadmin @ник — добавить админа (суперадмин)\n"
+        "• /addadminphone +79999999999 — добавить админа по телефону (суперадмин)\n"
+        "• /deladmin @ник — удалить админа (суперадмин)\n"
+        "• /test — проверка работоспособности\n\n"
+        "Выберите в меню:\n"
+        "🔧 Ремонт двигателя или ⚙️ Станочные работы"
+    )
+    await message.answer(text, parse_mode="HTML")
 
 # --- Кнопка: Ремонт двигателя ---
 @dp.message(F.text == "🔧 Ремонт двигателя")
@@ -218,6 +260,15 @@ async def process_work_type(callback: types.CallbackQuery, state: FSMContext):
         'type_copy': 'btn_type_copy',
         'type_drawing': 'btn_type_drawing'
     }
+    if callback.data == "type_units":
+        data = await state.get_data()
+        order_id = data['order_id']
+        database.update_order_field(order_id, 'order_type', 'machining_unit')
+        await callback.message.edit_text("✅ Ремонт узлов")
+        await callback.message.answer("Выберите категорию:", reply_markup=kb_unit_categories())
+        await state.set_state(MachiningUnitForm.category)
+        await callback.answer()
+        return
     key = map_types.get(callback.data)
     if not key:
         await callback.answer("Неверный выбор")
@@ -228,6 +279,100 @@ async def process_work_type(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text(f"✅ {human}")
     await callback.message.answer(get_text('step_dim_text'), parse_mode="Markdown")
     await state.set_state(OrderForm.dimensions)
+
+@dp.callback_query(MachiningUnitForm.category)
+async def unit_category_handler(callback: types.CallbackQuery, state: FSMContext):
+    cat_map = {
+        'unit_hg': "Головка блока цилиндров",
+        'unit_crank': "Коленвал",
+        'unit_trans': "Трансмиссия",
+        'unit_turbo': "Турбокомпрессор",
+        'unit_fuel': "Топливная система",
+        'unit_gear': "Редукторы"
+    }
+    if callback.data not in cat_map:
+        await callback.answer("Неверный выбор")
+        return
+    cat = cat_map[callback.data]
+    order_id = (await state.get_data())['order_id']
+    database.update_order_field(order_id, 'work_type', cat)
+    await callback.message.edit_text(f"✅ Категория: {cat}")
+    await callback.message.answer("Введите марку и модель автомобиля:")
+    await state.set_state(MachiningUnitForm.brand)
+    await callback.answer()
+
+@dp.message(MachiningUnitForm.brand)
+async def unit_brand_handler(message: types.Message, state: FSMContext):
+    brand = message.text.strip()[:100]
+    if len(brand) < 2:
+        await message.answer("Введите корректную марку и модель.")
+        return
+    order_id = (await state.get_data())['order_id']
+    database.update_order_field(order_id, 'car_brand', brand)
+    await state.update_data(unit_brand=brand, unit_photo_ids=[])
+    await message.answer("Введите год выпуска (ГГГГ):")
+    await state.set_state(MachiningUnitForm.year)
+
+@dp.message(MachiningUnitForm.year)
+async def unit_year_handler(message: types.Message, state: FSMContext):
+    year_text = message.text.strip()
+    if not re.match(r"^(19|20)\d{2}$", year_text):
+        await message.answer("Введите корректный год (например: 2015).")
+        return
+    year = int(year_text)
+    current_year = datetime.datetime.now().year
+    if year < 1900 or year > current_year:
+        await message.answer(f"Введите реальный год выпуска (1900-{current_year}).")
+        return
+    order_id = (await state.get_data())['order_id']
+    database.update_order_field(order_id, 'car_year', year_text)
+    await message.answer("Загрузите фото при необходимости, затем нажмите кнопку.", reply_markup=kb_photo_step())
+    await state.set_state(MachiningUnitForm.photo)
+
+@dp.message(MachiningUnitForm.photo, F.photo)
+async def unit_photo_collect(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    p_ids = data.get('unit_photo_ids', [])
+    p_ids.append(message.photo[-1].file_id)
+    await state.update_data(unit_photo_ids=p_ids)
+    await message.answer(f"Фото {len(p_ids)} принято.", reply_markup=kb_photo_step())
+
+@dp.message(MachiningUnitForm.photo)
+async def unit_photo_done(message: types.Message, state: FSMContext):
+    txt = safe_text(message)
+    data = await state.get_data()
+    p_ids = data.get('unit_photo_ids', [])
+    skip_btn = get_text('btn_skip_photo')
+    order_id = data['order_id']
+    if txt == "✅ Все фото отправлены":
+        if p_ids:
+            database.update_order_field(order_id, 'photo_file_id', ",".join(p_ids))
+        await message.answer("Фото сохранены.", reply_markup=types.ReplyKeyboardRemove())
+        await message.answer("Добавьте комментарий или оформите заказ.", reply_markup=kb_final_step(), parse_mode="Markdown")
+        await state.set_state(MachiningUnitForm.comment)
+    elif txt == skip_btn and not get_config_bool('is_photo_required'):
+        await message.answer("Ок, без фото.", reply_markup=types.ReplyKeyboardRemove())
+        await message.answer("Добавьте комментарий или оформите заказ.", reply_markup=kb_final_step(), parse_mode="Markdown")
+        await state.set_state(MachiningUnitForm.comment)
+    else:
+        await message.answer("Загрузите фото или используйте кнопку.")
+
+@dp.message(MachiningUnitForm.comment)
+async def unit_comment_handler(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    txt = safe_text(message)
+    order_id = data['order_id']
+    if txt == "✅ Оформить заказ":
+        final_comm = "Нет дополнительных комментариев"
+        await finish_order(order_id, final_comm, message, state)
+        return
+    elif txt == "✍️ Добавить комментарий":
+        await message.answer("Напишите ваш комментарий:", parse_mode="Markdown", reply_markup=types.ReplyKeyboardRemove())
+        await state.set_state(CommentForm.waiting_comment)
+        return
+    else:
+        await finish_order(order_id, txt, message, state)
+        return
 
 @dp.message(OrderForm.dimensions)
 async def process_dimensions(message: types.Message, state: FSMContext):
@@ -350,9 +495,8 @@ async def finish_order(order_id: int, comment: str, message: types.Message, stat
     await state.clear()
 
 async def notify_admin(order_id: int):
-    cfg = database.get_bot_config()
-    aid = cfg.get("admin_chat_id", "0")
-    if not aid or aid == '0':
+    ids = database.get_admin_chat_ids()
+    if not ids:
         return
     order = database.get_order(order_id)
 
@@ -361,56 +505,56 @@ async def notify_admin(order_id: int):
         [InlineKeyboardButton(text="💬 Ответить клиенту", callback_data=f"reply_{order_id}")]
     ])
 
-    text = (f"🔔 <b>НОВЫЙ ЗАКАЗ №{order['id']}</b>\n"
-            f"Тип: Станочные работы\n"
-            f"👤: {order['full_name']} (@{order['username']})\n"
-            f"🛠: {order['work_type']}\n"
-            f"📏: {order['dimensions_info']}\n"
-            f"⚙️: {order['conditions']}\n"
-            f"⏳: {order['urgency']}\n"
-            f"📝: {order['comment'] or 'Нет комментариев'}")
+    if order.get('order_type') == 'machining_unit':
+        text = (f"🔔 <b>НОВЫЙ ЗАКАЗ №{order['id']}</b>\n"
+                f"Тип: Ремонт узла\n"
+                f"👤: {order['full_name']} (@{order['username']})\n"
+                f"🔩 Узел: {order['work_type']}\n"
+                f"🚗 Марка: {order.get('car_brand') or 'Не указано'}\n"
+                f"📅 Год: {order.get('car_year') or 'Не указано'}\n"
+                f"⏳: {order['urgency'] or 'Не указано'}\n"
+                f"📝: {order['comment'] or 'Нет комментариев'}")
+    else:
+        text = (f"🔔 <b>НОВЫЙ ЗАКАЗ №{order['id']}</b>\n"
+                f"Тип: Станочные работы\n"
+                f"👤: {order['full_name']} (@{order['username']})\n"
+                f"🛠: {order['work_type']}\n"
+                f"📏: {order['dimensions_info']}\n"
+                f"⚙️: {order['conditions']}\n"
+                f"⏳: {order['urgency']}\n"
+                f"📝: {order['comment'] or 'Нет комментариев'}")
 
-    try:
-        p_ids = order['photo_file_id'].split(',') if order['photo_file_id'] else []
-        if len(p_ids) > 1:
-            mg = [InputMediaPhoto(media=pid) for pid in p_ids]
-            await bot.send_media_group(aid, media=mg)
-            # Отправляем отдельно текст с кнопкой
-            await bot.send_message(aid, text, parse_mode="HTML", reply_markup=reply_markup)
-        elif len(p_ids) == 1:
-            await bot.send_photo(
-                aid,
-                p_ids[0],
-                caption=text,
-                parse_mode="HTML",
-                reply_markup=reply_markup
-            )
-        else:
-            await bot.send_message(
-                aid,
-                text,
-                parse_mode="HTML",
-                reply_markup=reply_markup
-            )
-    except Exception as e:
-        logging.error(f"Ошибка отправки админу: {e}")
+    p_ids = order['photo_file_id'].split(',') if order['photo_file_id'] else []
+    for aid in ids:
+        try:
+            if len(p_ids) > 1:
+                mg = [InputMediaPhoto(media=pid) for pid in p_ids]
+                await bot.send_media_group(aid, media=mg)
+                await bot.send_message(aid, text, parse_mode="HTML", reply_markup=reply_markup)
+            elif len(p_ids) == 1:
+                await bot.send_photo(aid, p_ids[0], caption=text, parse_mode="HTML", reply_markup=reply_markup)
+            else:
+                await bot.send_message(aid, text, parse_mode="HTML", reply_markup=reply_markup)
+        except Exception as e:
+            logging.error(f"Ошибка отправки админу: {e}")
 
 # --- Админка ---
 @dp.message(Command("iamadmin"))
 async def cmd_admin_auth(message: types.Message):
     args = message.text.split()
     if len(args) > 1 and args[1] == config.BOT_ADMIN_PASSWORD:
-        # СОХРАНЯЕМ ID админа в базу
-        database.update_setting("admin_chat_id", str(message.chat.id))
-        await message.answer("✅ Админ авторизован.")
+        ok = database.add_admin(message.chat.id, message.from_user.username or None, message.from_user.full_name or None)
+        if ok:
+            await message.answer("✅ Админ авторизован.")
+        else:
+            await message.answer("❌ Достигнут лимит админов (до 10).")
     else:
         await message.answer("❌ Неверный пароль.")
 
 @dp.message(F.reply_to_message)
 async def admin_reply_handler(message: types.Message):
     """Старый обработчик Reply (оставлен для совместимости)"""
-    admin_chat_id = database.get_admin_chat_id()
-    if str(message.chat.id) != admin_chat_id:
+    if not database.is_admin(message.chat.id, message.from_user.username):
         return
     orig = message.reply_to_message.caption or message.reply_to_message.text
     if not orig:
@@ -457,8 +601,7 @@ async def check_lost_state(message: types.Message, state: FSMContext = None):
 @dp.message(Command("admin"))
 async def cmd_admin_panel(message: types.Message):
     """Админ-панель"""
-    cfg = database.get_bot_config()
-    if str(message.chat.id) != str(cfg.get("admin_chat_id", "0")):
+    if not database.is_admin(message.chat.id, message.from_user.username):
         return
 
     buttons = [
@@ -477,8 +620,7 @@ async def cmd_admin_panel(message: types.Message):
 @dp.callback_query(F.data.startswith("admin_"))
 async def admin_callback_handler(callback: types.CallbackQuery):
     """Обработка админских кнопок"""
-    cfg = database.get_bot_config()
-    if str(callback.message.chat.id) != str(cfg.get("admin_chat_id", "0")):
+    if not database.is_admin(callback.message.chat.id, callback.from_user.username):
         await callback.answer("❌ Нет доступа")
         return
 
@@ -578,13 +720,11 @@ async def engine_test_command(message: types.Message):
 @dp.message(Command("adminstatus"))
 async def cmd_admin_status(message: types.Message):
     """Проверка статуса админа"""
-    cfg = database.get_bot_config()
-    admin_chat_id = cfg.get("admin_chat_id", "0")
-
-    if admin_chat_id == "0" or not admin_chat_id:
-        await message.answer("❌ Админ не установлен. Используйте /iamadmin ПАРОЛЬ")
+    ids = database.get_admin_chat_ids()
+    if not ids:
+        await message.answer("❌ Админы не установлены. Используйте /iamadmin ПАРОЛЬ")
     else:
-        await message.answer(f"✅ Админ установлен. Chat ID: {admin_chat_id}\nВаш Chat ID: {message.chat.id}")
+        await message.answer(f"✅ Админы: {', '.join(map(str, ids))}\nВаш Chat ID: {message.chat.id}")
 
 # --- Хендлеры для ремонта двигателя ---
 @dp.message(EngineOrderForm.engine_brand)
@@ -620,8 +760,9 @@ async def engine_year_handler(message: types.Message, state: FSMContext):
         return
 
     year = int(year_text)
-    if year < 1900 or year > 2025:
-        await message.answer("❌ Введите реальный год выпуска (1900-2025).")
+    current_year = datetime.datetime.now().year
+    if year < 1900 or year > current_year:
+        await message.answer(f"❌ Введите реальный год выпуска (1900-{current_year}).")
         return
 
     # Сохраняем в БД
@@ -781,9 +922,8 @@ async def finish_engine_order(order_id: int, comment: str, user_data: dict, mess
 
 async def notify_engine_admin(order_id: int, user_data: dict):
     """Отправка уведомления админу о заказе двигателя"""
-    cfg = database.get_bot_config()
-    aid = cfg.get("admin_chat_id", "0")
-    if not aid or aid == '0':
+    ids = database.get_admin_chat_ids()
+    if not ids:
         return
 
     order = database.get_order(order_id)
@@ -802,15 +942,11 @@ async def notify_engine_admin(order_id: int, user_data: dict):
             f"⏳ Срочность: {user_data.get('engine_urgency', 'Не указано')}\n"
             f"📝 Комментарий: {order['comment'] or 'Нет комментариев'}")
 
-    try:
-        await bot.send_message(
-            aid,
-            text,
-            parse_mode="HTML",
-            reply_markup=reply_markup
-        )
-    except Exception as e:
-        logging.error(f"Ошибка отправки админу (двигатель): {e}")
+    for aid in ids:
+        try:
+            await bot.send_message(aid, text, parse_mode="HTML", reply_markup=reply_markup)
+        except Exception as e:
+            logging.error(f"Ошибка отправки админу (двигатель): {e}")
 
 # обработчик ответа клиенту
 @dp.callback_query(F.data.startswith("reply_"))
@@ -825,11 +961,7 @@ async def reply_to_order_handler(callback: types.CallbackQuery, state: FSMContex
             await callback.answer("❌ Заказ не найден")
             return
 
-        # Проверяем, что это админ
-        cfg = database.get_bot_config()
-        admin_chat_id = cfg.get("admin_chat_id", "0")
-
-        if str(callback.message.chat.id) != admin_chat_id:
+        if not database.is_admin(callback.message.chat.id, callback.from_user.username):
             await callback.answer("❌ Нет доступа")
             return
 
@@ -854,6 +986,86 @@ async def reply_to_order_handler(callback: types.CallbackQuery, state: FSMContex
     except Exception as e:
         logging.error(f"Ошибка обработки reply: {e}")
         await callback.answer("❌ Ошибка")
+
+SUPERADMIN_ID = 11504
+
+@dp.message(Command("listadmins"))
+async def cmd_list_admins(message: types.Message):
+    if message.from_user.id != SUPERADMIN_ID:
+        return
+    rows = database.list_admins()
+    if not rows:
+        await message.answer("Нет админов")
+        return
+    text = "Админы:\n\n"
+    for r in rows:
+        text += f"- {r.get('username') or 'нет'} | {r.get('chat_id') or 'нет'}\n"
+    await message.answer(text)
+
+@dp.message(Command("addadmin"))
+async def cmd_add_admin(message: types.Message):
+    if message.from_user.id != SUPERADMIN_ID:
+        return
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("Укажите ник: /addadmin @username")
+        return
+    nick = args[1]
+    ok = database.add_admin_by_username(nick)
+    if ok:
+        await message.answer("Админ добавлен")
+    else:
+        await message.answer("Не удалось добавить админа (возможно лимит 10)")
+
+@dp.message(Command("deladmin"))
+async def cmd_del_admin(message: types.Message):
+    if message.from_user.id != SUPERADMIN_ID:
+        return
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("Укажите ник: /deladmin @username")
+        return
+    nick = args[1]
+    cnt = database.remove_admin_by_username(nick)
+    if cnt > 0:
+        await message.answer("Админ удален")
+    else:
+        await message.answer("Админ не найден")
+
+@dp.message(Command("syncadmin"))
+async def cmd_sync_admin(message: types.Message):
+    username = message.from_user.username
+    if not username:
+        await message.answer("У вас нет @username. Установите ник в Telegram.")
+        return
+    ok = database.bind_admin_chat_id(username, message.chat.id, message.from_user.full_name or None)
+    if ok:
+        await message.answer("chat_id привязан к вашему нику. Вы админ.")
+    else:
+        await message.answer("Ник не найден в списке админов. Добавьте вас через /addadmin @ник у суперадмина.")
+
+@dp.message(Command("addadminphone"))
+async def cmd_add_admin_phone(message: types.Message):
+    if message.from_user.id != SUPERADMIN_ID:
+        return
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("Укажите номер: /addadminphone +79999999999 или 89999999999")
+        return
+    raw = args[1]
+    norm = raw.strip()
+    if re.match(r"^\+7\d{10}$", norm):
+        phone = norm
+    elif re.match(r"^8\d{10}$", norm):
+        phone = "+7" + norm[1:]
+    else:
+        await message.answer("Неверный формат. Допустимо: +7XXXXXXXXXX или 8XXXXXXXXXX")
+        return
+    ok = database.add_admin_by_phone(phone)
+    if ok:
+        await message.answer(f"Админ по телефону {phone} добавлен")
+    else:
+        await message.answer("Не удалось добавить админа (возможно лимит 10)")
 
 @dp.message(AdminReplyForm.waiting_for_reply)
 async def process_admin_reply(message: types.Message, state: FSMContext):

@@ -256,3 +256,188 @@ def get_admin_chat_id():
     """Получить chat_id админа"""
     cfg = get_bot_config()
     return cfg.get("admin_chat_id", "0")
+
+def ensure_admins_table():
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS admins (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    chat_id BIGINT NULL UNIQUE,
+                    username VARCHAR(100) UNIQUE NULL,
+                    phone VARCHAR(20) UNIQUE NULL,
+                    full_name VARCHAR(255) NULL,
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+            """)
+            cur.execute("ALTER TABLE admins ADD COLUMN IF NOT EXISTS phone VARCHAR(20) UNIQUE NULL")
+    except Exception as e:
+        print(f"Ошибка создания таблицы admins: {e}")
+    finally:
+        conn.close()
+
+def get_admin_chat_ids():
+    ensure_admins_table()
+    conn = get_connection()
+    ids = []
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT chat_id FROM admins WHERE chat_id IS NOT NULL AND chat_id > 0")
+            ids = [row['chat_id'] for row in cur.fetchall()]
+    except Exception as e:
+        print(f"Ошибка получения админов: {e}")
+    finally:
+        conn.close()
+    if not ids:
+        legacy = get_admin_chat_id()
+        try:
+            if legacy and legacy != "0":
+                ids = [int(legacy)]
+        except Exception:
+            pass
+    return ids
+
+def is_admin(chat_id, username=None):
+    ensure_admins_table()
+    conn = get_connection()
+    ok = False
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM admins WHERE chat_id=%s", (chat_id,))
+            ok = cur.fetchone() is not None
+            if not ok and username:
+                cur.execute("SELECT 1 FROM admins WHERE username=%s", (username,))
+                ok = cur.fetchone() is not None
+    except Exception as e:
+        print(f"Ошибка проверки админа: {e}")
+    finally:
+        conn.close()
+    return ok
+
+def admin_count():
+    ensure_admins_table()
+    conn = get_connection()
+    cnt = 0
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) AS cnt FROM admins")
+            cnt = cur.fetchone()['cnt']
+    except Exception as e:
+        print(f"Ошибка подсчета админов: {e}")
+    finally:
+        conn.close()
+    return cnt
+
+def add_admin(chat_id, username, full_name):
+    ensure_admins_table()
+    if admin_count() >= 10:
+        return False
+    conn = get_connection()
+    ok = False
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO admins (chat_id, username, full_name)
+                VALUES (%s, %s, %s)
+                ON DUPLICATE KEY UPDATE username=VALUES(username), full_name=VALUES(full_name)
+            """, (chat_id, username, full_name))
+            ok = True
+    except Exception as e:
+        print(f"Ошибка добавления админа: {e}")
+    finally:
+        conn.close()
+    return ok
+
+def add_admin_by_username(username):
+    ensure_admins_table()
+    if not username:
+        return False
+    username = username.lstrip('@')
+    if admin_count() >= 10:
+        return False
+    conn = get_connection()
+    ok = False
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO admins (username)
+                VALUES (%s)
+                ON DUPLICATE KEY UPDATE username=%s
+            """, (username, username))
+            ok = True
+    except Exception as e:
+        print(f"Ошибка добавления админа по нику: {e}")
+    finally:
+        conn.close()
+    return ok
+
+def remove_admin_by_username(username):
+    ensure_admins_table()
+    if not username:
+        return 0
+    username = username.lstrip('@')
+    conn = get_connection()
+    affected = 0
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM admins WHERE username=%s", (username,))
+            affected = cur.rowcount
+    except Exception as e:
+        print(f"Ошибка удаления админа: {e}")
+    finally:
+        conn.close()
+    return affected
+
+def list_admins():
+    ensure_admins_table()
+    conn = get_connection()
+    rows = []
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT chat_id, username, full_name, created_at FROM admins ORDER BY created_at DESC")
+            rows = cur.fetchall()
+    except Exception as e:
+        print(f"Ошибка списка админов: {e}")
+    finally:
+        conn.close()
+    return rows
+
+def bind_admin_chat_id(username, chat_id, full_name=None):
+    ensure_admins_table()
+    if not username or not chat_id:
+        return False
+    username = username.lstrip('@')
+    conn = get_connection()
+    ok = False
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE admins SET chat_id=%s, full_name=%s WHERE username=%s", (chat_id, full_name, username))
+            ok = cur.rowcount > 0
+    except Exception as e:
+        print(f"Ошибка привязки chat_id админа: {e}")
+    finally:
+        conn.close()
+    return ok
+
+def add_admin_by_phone(phone):
+    ensure_admins_table()
+    if not phone:
+        return False
+    if admin_count() >= 10:
+        return False
+    conn = get_connection()
+    ok = False
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO admins (phone)
+                VALUES (%s)
+                ON DUPLICATE KEY UPDATE phone=%s
+            """, (phone, phone))
+            ok = True
+    except Exception as e:
+        print(f"Ошибка добавления админа по телефону: {e}")
+    finally:
+        conn.close()
+    return ok
